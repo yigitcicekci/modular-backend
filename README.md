@@ -37,7 +37,7 @@ The examples use tools such as Prisma, BullMQ, Docker, and GitHub Actions to sho
 
 ## Architecture and data flow
 
-Organize by domain. A small module keeps its controller, service, repository, and Nest module at the root, with its DTOs and error definitions nearby. When a layer grows, group its files within that domain.
+Every feature module includes DTOs, a controller, a service, a repository, and a Nest module definition. A single controller, service, or repository sits at the feature root. Group a layer in `controllers/`, `services/`, or `repositories/` once it has multiple files. Use `errors/` for domain-specific error definitions.
 
 ```text
 src/modules/books/
@@ -68,6 +68,12 @@ flowchart LR
 For example, when an authenticated user archives a book, the controller supplies the book ID and the authenticated owner ID. The service asks the repository to archive an active book. The repository applies the book ID, owner ID, and current status in the same update. The service handles a zero-row result with the domain error. That keeps ownership and the state transition safe under concurrent requests.
 
 Business actions in another domain go through that domain's service. An exported repository can be called directly for data-only work or a shared transaction. If a workflow spans repositories, the service can start the transaction and pass the same client to each participant. A repository can manage a self-contained atomic operation. Domain helpers stay local until another module actually needs them.
+
+## Bootstrap and packages
+
+Start with one `bootstrap()` in `main.ts`. If tests or another entry point need the same HTTP setup, share it through `configureHttp(app, config)`. Nest providers own external-service initialization and cleanup.
+
+Use Node.js built-ins, required Nest framework packages, and official Nest modules for features that need them. For example, use `fetch` for straightforward HTTP calls, `node:crypto` for UUIDs, and Nest pipes for request validation. Reuse the project's existing database and Redis integrations. If a feature requires a new external client or peer package, the agent explains the requirement and gets approval before adding it.
 
 ## Query performance and Redis
 

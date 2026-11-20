@@ -3,27 +3,25 @@
 ## Contents
 
 - Bootstrap and configuration
+- Package policy
 - Shared rate limiting
 - Logs and health
 - Integrations, verification, and examples of applying the skill
 
 ## Bootstrap and configuration
 
-Use existing Nest config/validation/bootstrap components. New HTTP backends need validation actually bound, the required providers imported, safe global errors, controlled CORS for their client topology, graceful shutdown, and appropriately protected routes. Choose API prefixes/versioning/response envelopes from the product or existing contract; do not invent a new envelope during a refactor.
+Start with one `bootstrap()` in `main.ts`. Use a `configureHttp(app, config)` function when entry points or integration tests share HTTP wiring. Keep a builder class for an existing setup with a real need for composable stages. HTTP setup covers prefix and exclusions, controlled CORS, validation, global errors, and shutdown hooks. Register guards, filters, and interceptors through Nest module providers such as `APP_GUARD`, `APP_FILTER`, and `APP_INTERCEPTOR` when they need dependency injection. The provider that owns an external connection also owns its startup and cleanup.
 
 ```ts
-// main.ts fragment; preserve the project's HTTP adapter and bootstrap builder.
+// Inside bootstrap(). Use the configured HTTP adapter.
 const app = await NestFactory.create(AppModule);
-app.useGlobalPipes(new ValidationPipe({
-  whitelist: true,
-  forbidNonWhitelisted: true,
-  transform: true,
-}));
+app.setGlobalPrefix(config.apiPrefix, { exclude: config.prefixExclusions });
+app.enableCors({ origin: config.corsOrigins });
 app.enableShutdownHooks();
 await app.listen(config.port, config.host);
 ```
 
-In an existing API, enabling forbidNonWhitelisted or transformations changes behavior: apply deliberately with affected clients/tests. Validate numeric DTO bounds explicitly; do not rely on implicit coercion for every value. Register the existing global filter/guard through DI where it needs dependencies. Do not double-wrap responses or exceptions.
+Bind request DTO validation through [feature pipes](architecture.md#dtocontrollerservicerepository-example) or the project's existing global validation. Match the existing rules on transformations and unknown fields during revisions. Use one startup error owner that reports safe diagnostics and terminates with a nonzero status. Exercise the real HTTP configuration in integration tests, including global providers, health route exclusions, and the selected adapter.
 
 Config values are parsed/validated at startup, then injected. Never silently accept malformed ports, TTLs, empty secrets, or default production credentials. Do not scatter process.env reads through services. Keep actual secrets outside source and logs; document needed variable names in the project's example environment file.
 
@@ -52,6 +50,16 @@ SwaggerModule.setup('docs', app, document);
 ```
 
 Gate or protect docs according to the product's deployment policy; do not expose debug/test controllers in production by default.
+
+## Package policy
+
+For a plain Node.js service, use the standard library. For Nest HTTP, use `@nestjs/common`, `@nestjs/core`, exactly one official HTTP adapter, and its required framework peers such as `reflect-metadata` and `rxjs` for Nest 11. For TypeScript, use `typescript` and `@types/node` as dev tooling, plus `@nestjs/cli` if the project builds through `nest build`. Check the installed or selected major's manifests.
+
+Prefer built-in `fetch`, `AbortSignal.timeout()`, `node:crypto`, `Intl`, `node:test`, `node:assert/strict`, and `--env-file` on supported Node versions. Nest built-in `Parse*` pipes cover individual values. A small feature pipe can validate a DTO body. Use `ValidationPipe` from an existing project when its `class-validator` and `class-transformer` dependencies are already installed. Adding these packages requires explicit approval.
+
+Official Nest packages such as `@nestjs/config`, `@nestjs/jwt`, `@nestjs/swagger`, `@nestjs/terminus`, `@nestjs/schedule`, and `@nestjs/testing` are feature choices. Verify their dependency requirements before choosing them. Database drivers, Redis clients, durable queue implementations, and provider SDKs require a supported existing integration or explicit approval for the required package. A compatible existing HTTP service can be called through `fetch` when its API meets the feature needs. Never hand-roll a Redis or database protocol, cryptographic token signing, or delivery guarantees to avoid a dependency.
+
+See [Nest validation](https://docs.nestjs.com/techniques/validation), [Nest lifecycle](https://docs.nestjs.com/fundamentals/lifecycle-events), and [Node globals](https://nodejs.org/api/globals.html).
 
 ## Shared rate limiting
 
@@ -95,7 +103,7 @@ this.logger.log({
 
 Use the existing logger instead of a custom logging framework. Do not log the same exception at every layer. If audit persistence is security-critical, define durability/failure policy; a swallowed catch is not a durable audit trail. Best-effort operational telemetry can fail independently when stated.
 
-Liveness checks process responsiveness, not every dependency. Readiness checks required dependencies and prepared data. Do not expose secrets or internal failure details through public health routes. Wire timeouts so a health check cannot hang indefinitely.
+Liveness checks process responsiveness. Readiness checks required dependencies and prepared data. Return HTTP 503 when a required check fails, and keep internal failure details out of the response. Wire timeouts so a health check cannot hang indefinitely. Verify that the load balancer or orchestrator calls the actual readiness and liveness routes.
 
 ```ts
 // HealthService fragment; repositories/providers implement bounded checks.

@@ -172,7 +172,7 @@ getCards(isbns: string[]) {
 }
 ```
 
-Adapt to installed ioredis/node-redis methods; never install a second client for the example. Pipelining reduces round trips, not read/decide/write races. Use native atomic commands, MULTI/EXEC, or bounded Lua only when needed; test the actual invariant.
+Adapt to the project's existing Redis client or approved service interface. If a new client is the only supported option, state that requirement before adding a package. Pipelining reduces round trips. Use native atomic commands, MULTI/EXEC, or bounded Lua when an operation must also be atomic. Test the actual invariant.
 
 The helper below assumes a repository adapter with typed values/null and an explicitly selected cache-aside policy. The adapter sets key/TTL from config. It intentionally propagates GET and SET failures; no SQL fallback on outage.
 

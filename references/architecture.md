@@ -29,7 +29,7 @@ src/
   utils/redis-key.util.ts
 ```
 
-When services multiply, move them into services/; other layers need not move too. Preserve existing service/repository singular naming. No repository for pure computation or empty controller for a worker. Do not generate all example files if the feature does not need them.
+Every feature under `src/modules/` has `dto/`, a controller, a service, a repository, and a Nest module definition. Use `errors/` for module-specific errors when needed. A single controller, service, or repository sits at the feature root. On the second file in a layer, group that layer in `controllers/`, `services/`, or `repositories/`. Apply these names in new code and preserve existing imports for revisions outside the layout scope. Put infrastructure providers in `libs/` and scheduler or worker entry points with their runtime code. Domain operations invoked by a worker still belong in their feature module.
 
 ```ts
 @Module({
@@ -45,16 +45,29 @@ Export BookRepository too only when another module needs data-only access. Impor
 
 ## DTO/controller/service/repository example
 
-Illustrative fragments assume project providers/decorators and a Book model with id, ownerId, title, status, createdAt. Bind validation once at bootstrap; DTO decorators alone do not enforce validation.
+These fragments assume the project's auth providers and a book model with id, ownerId, title, status, and createdAt. The request DTO is validated by a Nest pipe attached to the body. This works with Nest's core packages and leaves package-based validation available to projects that already use it.
 
 ```ts
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import { BadRequestException, Injectable, PipeTransform } from '@nestjs/common';
 
-export class CreateBookDto {
-  @IsString()
-  @MinLength(1)
-  @MaxLength(200)
-  title!: string;
+export type CreateBookDto = { title: string };
+
+@Injectable()
+export class CreateBookBodyPipe implements PipeTransform<unknown, CreateBookDto> {
+  transform(value: unknown): CreateBookDto {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestException('Expected an object');
+    }
+    const fields = Object.keys(value);
+    if (fields.length !== 1 || fields[0] !== 'title') {
+      throw new BadRequestException('Expected only a title field');
+    }
+    const { title } = value as Record<string, unknown>;
+    if (typeof title !== 'string' || title.length < 1 || title.length > 200) {
+      throw new BadRequestException('Title must contain 1 to 200 characters');
+    }
+    return { title };
+  }
 }
 ```
 
@@ -67,7 +80,7 @@ export class BookController {
   constructor(private readonly books: BookService) {}
 
   @Post()
-  create(@CurrentUser() user: AuthUser, @Body() input: CreateBookDto) {
+  create(@CurrentUser() user: AuthUser, @Body(CreateBookBodyPipe) input: CreateBookDto) {
     return this.books.create(user.id, input);
   }
 

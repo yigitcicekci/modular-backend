@@ -29,8 +29,9 @@ Read repository instructions, package manifest, bootstrap, affected modules and 
 
 - Default to NestJS and TypeScript unless the user chose another Node.js stack. For plain Node.js, apply the same boundaries through its routes and composition mechanism; do not install Nest just for decorators.
 - Implement only required modules/features. Auth/user/device workflows are reusable guidance, not permission to add account features to a service that does not need them.
-- Redis is required infrastructure and must have useful workload-appropriate roles. Do not invent data or move financial/relational truth merely to exercise Redis.
-- Respect chosen ORM, database, HTTP adapter, Redis client, and package manager. Prisma examples do not require Prisma/PostgreSQL, JWT, or a specific adapter in every backend. Select missing core technologies proportionately.
+- Plan Redis as baseline infrastructure with a useful workload role. Use the project's existing connection or an approved service interface. If an external client is required under the package policy, surface that requirement before selecting or adding it.
+- Use Node.js built-ins and official NestJS modules first. Install the Nest core, one HTTP adapter, its required peers, and required build tooling. Add official optional Nest modules only for required features. A new third-party dependency requires explicit user approval, including an optional peer an integration needs. Reuse existing integrations in revisions. See [Operations](references/operations.md#package-policy).
+- Start HTTP setup in `main.ts` with a `bootstrap()` function. Extract shared setup into `configureHttp(app, config)` when another entry point or integration test needs it. Keep external service startup and shutdown in the owning providers.
 - Deliver connected bootstrap, validated config, providers, required migrations, local setup, and the requested APIs. Do not stop at disconnected scaffold files.
 
 ### Existing backend / revision
@@ -38,13 +39,13 @@ Read repository instructions, package manifest, bootstrap, affected modules and 
 - Find all callers before changing a shared function or moving files: services, controllers, jobs, guards, exports, mocks, fixtures, and response consumers.
 - Preserve unrelated changes, public contracts, token/storage behavior, validation, ownership filters, and established naming. Restrict cleanup to the task's path.
 - Extract queries to concrete repositories when changing the relevant service. Preserve transaction context, locks, error handling, return shape, soft-delete and tenant scopes.
-- Do not add Redis/dependencies to a narrow unrelated patch. A requested infrastructure setup/refactor must integrate Redis in the affected design; flag unrelated absence instead of expanding scope.
+- For an infrastructure setup or refactor, apply the same package policy. Preserve existing integrations unless the task changes them. Resolve dependencies required for the requested infrastructure before adding packages.
 - Do not silently remove fallback, switch session storage, change token lifetimes, or invalidate all sessions as cleanup. Plan compatibility and data/key migrations for requested transitions.
 - Produce necessary migrations; do not delete live data or execute production migrations incidentally.
 
 ## Architecture rules
 
-1. **Organize by domain module.** Each module owns DTOs, controller, service, repository, module wiring, and errors where needed. Keep a lone controller/service/repository at module root; group a layer when files increase. Group related DTOs/errors naturally. Follow existing singular/plural naming on revisions; no empty layers.
+1. **Use the full layout for each feature under `src/modules/`.** Every feature module includes `dto/`, a controller, a service, a repository, and `<feature>.module.ts`. Keep a single controller, service, or repository at the module root. When a layer gets multiple files, group it in `controllers/`, `services/`, or `repositories/`. Use `errors/` for module-specific errors when needed. Put supporting providers under infrastructure or jobs under workers when they have no feature API or data access. On a scoped revision preserve existing paths unless a module layout change is part of the task.
 2. **Controller handles HTTP; service decides; repository accesses data.** No business logic, ORM queries, or Redis commands in controllers. Services own rules and orchestration. Repositories own queries and Redis operations, including conditional writes enforcing atomic invariants.
 3. **Compose practically.** Cross-module business actions call the owning service. Direct use of an exported repository is allowed for data-only work or shared transactions. Do not create pass-through service methods for appearances.
 4. **Keep transaction ownership close to the work.** Service can span repositories with one passed transaction client; repository can own a self-contained atomic operation. Every participant uses that client. No generic Unit of Work or transaction framework.
