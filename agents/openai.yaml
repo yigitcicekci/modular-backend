@@ -1,0 +1,4 @@
+interface:
+  display_name: "Modular Backend"
+  short_description: "Build and refactor modular NestJS/Node.js backends"
+  default_prompt: "Use $modular-backend to complete this backend task after inspecting the existing architecture, data ownership, and affected callers."
