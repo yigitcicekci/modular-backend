@@ -1,6 +1,6 @@
 ---
 name: modular-backend
-description: Build, extend, refactor, or fix NestJS and Node.js backends with modular controller/service/repository boundaries, efficient queries, explicit Redis roles, auth/user/device workflows, reliable jobs, and CI/CD. Use for new backend infrastructure, backend features, and existing backend revisions; not frontend-only tasks or permission to rewrite unrelated code.
+description: Build, extend, refactor, or fix NestJS and Node.js backends using Fastify for HTTP, modular controller/service/repository boundaries, efficient queries, explicit Redis roles, auth/user/device workflows, reliable jobs, and CI/CD. Use for new backend infrastructure, backend features, and existing backend revisions; not frontend-only tasks or permission to rewrite unrelated code.
 license: MIT
 ---
 
@@ -27,10 +27,10 @@ Read repository instructions, package manifest, bootstrap, affected modules and 
 
 ### New backend
 
-- Default to NestJS and TypeScript unless the user chose another Node.js stack. For plain Node.js, apply the same boundaries through its routes and composition mechanism; do not install Nest just for decorators.
+- Use Fastify for all new HTTP backends. Default to NestJS and TypeScript with an explicit `FastifyAdapter` from `@nestjs/platform-fastify`. For Node.js HTTP without Nest, use `fastify` directly with the same module boundaries. Workers without HTTP use their existing worker entry point.
 - Implement only required modules/features. Auth/user/device workflows are reusable guidance, not permission to add account features to a service that does not need them.
 - Plan Redis as baseline infrastructure with a useful workload role. Use the project's existing connection or an approved service interface. If an external client is required under the package policy, surface that requirement before selecting or adding it.
-- Use Node.js built-ins and official NestJS modules first. Install the Nest core, one HTTP adapter, its required peers, and required build tooling. Add official optional Nest modules only for required features. A new third-party dependency requires explicit user approval, including an optional peer an integration needs. Reuse existing integrations in revisions. See [Operations](references/operations.md#package-policy).
+- Use Node.js built-ins and official NestJS modules first. Install the Nest core, `@nestjs/platform-fastify`, required peers, and necessary build tooling. Direct `fastify` is part of the approved HTTP stack when the application imports it. Add official optional Nest modules only for required features. Other new third-party dependencies, including optional peers and Fastify plugins, require explicit user approval. Reuse existing integrations in revisions. See [Operations](references/operations.md#package-policy).
 - Start HTTP setup in `main.ts` with a `bootstrap()` function. Extract shared setup into `configureHttp(app, config)` when another entry point or integration test needs it. Keep external service startup and shutdown in the owning providers.
 - Deliver connected bootstrap, validated config, providers, required migrations, local setup, and the requested APIs. Do not stop at disconnected scaffold files.
 
@@ -38,6 +38,7 @@ Read repository instructions, package manifest, bootstrap, affected modules and 
 
 - Find all callers before changing a shared function or moving files: services, controllers, jobs, guards, exports, mocks, fixtures, and response consumers.
 - Preserve unrelated changes, public contracts, token/storage behavior, validation, ownership filters, and established naming. Restrict cleanup to the task's path.
+- Use Fastify when the task sets up or replaces the HTTP stack. An existing service on a different adapter needs a scoped migration to Fastify. Preserve its adapter during unrelated changes and surface the migration requirement when relevant. Verify status codes, middleware, cookies, uploads, and signed webhook bodies where the migration touches them.
 - Extract queries to concrete repositories when changing the relevant service. Preserve transaction context, locks, error handling, return shape, soft-delete and tenant scopes.
 - For an infrastructure setup or refactor, apply the same package policy. Preserve existing integrations unless the task changes them. Resolve dependencies required for the requested infrastructure before adding packages.
 - Do not silently remove fallback, switch session storage, change token lifetimes, or invalidate all sessions as cleanup. Plan compatibility and data/key migrations for requested transitions.

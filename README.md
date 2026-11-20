@@ -2,7 +2,7 @@
 
 [![skills.sh](https://skills.sh/b/yigitcicekci/modular-backend)](https://skills.sh/yigitcicekci/modular-backend/modular-backend)
 
-Modular Backend is an Agent Skill for building and revising NestJS and Node.js backends. It gives coding agents a way to decide where code belongs, how data should be stored and accessed, and what to verify before delivering a change. It is designed for both a new API and a focused change in an existing service.
+Modular Backend is an Agent Skill for building and revising NestJS and Node.js backends with Fastify for HTTP. It gives coding agents a way to decide where code belongs, how data should be stored and accessed, and what to verify before delivering a change. It is designed for both a new API and a focused change in an existing service.
 
 ## Install and use
 
@@ -30,7 +30,7 @@ The agent starts with [SKILL.md](SKILL.md) and opens the references relevant to 
 
 | Starting point | How the agent proceeds |
 | --- | --- |
-| **New backend** | Defaults to NestJS and TypeScript unless another Node.js stack was chosen. Builds the required domain modules, wires bootstrap and validated configuration, assigns Redis a useful role, and includes required persistence, migrations, local setup, and checks. |
+| **New backend** | Uses Fastify for HTTP through Nest's Fastify adapter or directly in a Node.js application without Nest. Builds the required domain modules, wires bootstrap and validated configuration, assigns Redis a useful role, and includes required persistence, migrations, local setup, and checks. |
 | **Existing backend** | Traces callers and dependencies. Applies the conventions to the code involved in the request while preserving API responses, authorization and ownership filters, transaction behavior, and compatibility with existing data. Updates wiring, tests, and consumers as needed. |
 
 The examples use tools such as Prisma, BullMQ, Docker, and GitHub Actions to show the approach in code. The agent adapts them to the installed ORM, queue, Redis client, and delivery platform. It adds optional features such as device registration, push notifications, or workers when the requested workload calls for them.
@@ -71,7 +71,7 @@ Business actions in another domain go through that domain's service. An exported
 
 ## Bootstrap and packages
 
-Start with one `bootstrap()` in `main.ts`. If tests or another entry point need the same HTTP setup, share it through `configureHttp(app, config)`. Nest providers own external-service initialization and cleanup.
+Start with one `bootstrap()` in `main.ts` and pass `new FastifyAdapter()` explicitly when creating the Nest application. If tests or another entry point need the same HTTP setup, share it through `configureHttp(app, config)`. Nest providers own external-service initialization and cleanup. For an existing service on another adapter, plan the Fastify migration as part of work on the HTTP stack.
 
 Use Node.js built-ins, required Nest framework packages, and official Nest modules for features that need them. For example, use `fetch` for straightforward HTTP calls, `node:crypto` for UUIDs, and Nest pipes for request validation. Reuse the project's existing database and Redis integrations. If a feature requires a new external client or peer package, the agent explains the requirement and gets approval before adding it.
 

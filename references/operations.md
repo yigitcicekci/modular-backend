@@ -13,8 +13,15 @@
 Start with one `bootstrap()` in `main.ts`. Use a `configureHttp(app, config)` function when entry points or integration tests share HTTP wiring. Keep a builder class for an existing setup with a real need for composable stages. HTTP setup covers prefix and exclusions, controlled CORS, validation, global errors, and shutdown hooks. Register guards, filters, and interceptors through Nest module providers such as `APP_GUARD`, `APP_FILTER`, and `APP_INTERCEPTOR` when they need dependency injection. The provider that owns an external connection also owns its startup and cleanup.
 
 ```ts
-// Inside bootstrap(). Use the configured HTTP adapter.
-const app = await NestFactory.create(AppModule);
+import { NestFactory } from '@nestjs/core';
+import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
+import { AppModule } from './app.module';
+
+// Inside bootstrap(), with validated config.
+const app = await NestFactory.create<NestFastifyApplication>(
+  AppModule,
+  new FastifyAdapter(),
+);
 app.setGlobalPrefix(config.apiPrefix, { exclude: config.prefixExclusions });
 app.enableCors({ origin: config.corsOrigins });
 app.enableShutdownHooks();
@@ -22,6 +29,8 @@ await app.listen(config.port, config.host);
 ```
 
 Bind request DTO validation through [feature pipes](architecture.md#dtocontrollerservicerepository-example) or the project's existing global validation. Match the existing rules on transformations and unknown fields during revisions. Use one startup error owner that reports safe diagnostics and terminates with a nonzero status. Exercise the real HTTP configuration in integration tests, including global providers, health route exclusions, and the selected adapter.
+
+For Node.js HTTP without Nest, initialize `fastify()` directly. Keep adapter-specific request/reply APIs at the transport boundary. When migrating an existing HTTP stack to Fastify, check middleware, response serialization and status, CORS, cookies, multipart routes, and webhook body handling as applicable. Use the same adapter in production and HTTP integration tests. Fastify's `inject()` can exercise routes without opening a listening socket. [Nest Fastify adapter](https://docs.nestjs.com/techniques/performance#fastify-adapter) · [Fastify testing](https://fastify.dev/docs/latest/Guides/Testing/)
 
 Config values are parsed/validated at startup, then injected. Never silently accept malformed ports, TTLs, empty secrets, or default production credentials. Do not scatter process.env reads through services. Keep actual secrets outside source and logs; document needed variable names in the project's example environment file.
 
@@ -53,7 +62,7 @@ Gate or protect docs according to the product's deployment policy; do not expose
 
 ## Package policy
 
-For a plain Node.js service, use the standard library. For Nest HTTP, use `@nestjs/common`, `@nestjs/core`, exactly one official HTTP adapter, and its required framework peers such as `reflect-metadata` and `rxjs` for Nest 11. For TypeScript, use `typescript` and `@types/node` as dev tooling, plus `@nestjs/cli` if the project builds through `nest build`. Check the installed or selected major's manifests.
+For Nest HTTP, use `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-fastify`, and required framework peers such as `reflect-metadata` and `rxjs` for Nest 11. For Node.js HTTP without Nest, install `fastify` directly. Declare a direct `fastify` dependency in Nest only if the application imports it directly, and match the adapter-compatible version. Non-HTTP Node.js processes can use built-ins for their runtime work. For TypeScript, use `typescript` and `@types/node` as dev tooling, plus `@nestjs/cli` if the project builds through `nest build`. Check the installed or selected major's manifests. Fastify plugins are feature dependencies and follow the same approval rule.
 
 Prefer built-in `fetch`, `AbortSignal.timeout()`, `node:crypto`, `Intl`, `node:test`, `node:assert/strict`, and `--env-file` on supported Node versions. Nest built-in `Parse*` pipes cover individual values. A small feature pipe can validate a DTO body. Use `ValidationPipe` from an existing project when its `class-validator` and `class-transformer` dependencies are already installed. Adding these packages requires explicit approval.
 
