@@ -84,7 +84,9 @@ The same filter handles framework and validation errors, preserves headers such 
 
 The HTTP app is created in `src/builder/app.builder.ts` and started by `src/main.ts`. The builder sets up Fastify, registers `@fastify/helmet` before initialization, and applies the validated HTTP configuration. Integration tests use the same builder and verify headers on a live route through Fastify injection. Nest providers own external service initialization and cleanup.
 
-Use Node.js built-ins and official Nest modules wherever they meet the need. Fastify, its compatible Helmet plugin, and one Redis client are the baseline package choices. Reuse the project's existing Redis client, or use node-redis for a new project. For localized Nest HTTP errors, reuse the installed i18n integration or use `nestjs-i18n`. Additional third-party packages require an explicit decision.
+Use Node.js built-ins and official Nest modules wherever they meet the need. Fastify, its compatible Helmet plugin, and one Redis client are the baseline package choices. Reuse the project's existing Redis client, or use node-redis for a new project. For localized Nest HTTP errors, reuse the installed i18n integration or use `nestjs-i18n`. Password flows can use `argon2` for Argon2id. Other third-party packages require an explicit decision.
+
+The local Docker workflow runs PostgreSQL when needed and Redis through Compose. `start-local.sh` waits for healthy dependencies, applies committed local migrations and starts the API watcher in the foreground. `stop-local.sh` shuts down the Compose project and retains its data volumes. The production image runs compiled Node code as a non-root user. When jobs need an independent worker, the same image can start its worker entrypoint with role-specific config. [Docker examples](references/docker.md)
 
 ## Query performance and Redis
 
@@ -106,9 +108,11 @@ Redis-owned records and prepared projections are served from Redis. A missing re
 
 | Area | What the skill guides |
 | --- | --- |
-| **User, auth, and device** | Separate profile updates, credential verification, session management, and device metadata. Apply ownership checks and use response DTOs that expose only allowed fields. When refresh tokens are used, make rotation atomic and define replay and logout behavior. |
+| **User, auth, and device** | Separate profile and account rules, credential verification, device metadata, and sessions. Use `@nestjs/jwt` for Nest JWT flows and Argon2id for new password flows. Bind mobile sessions to a validated installation and apply atomic refresh rotation. |
+| **Fingerprints** | Use Argon2id for passwords, SHA-256 digests for high-entropy bearer tokens, and purpose-specific HMAC for trusted client IP and normalized account keys. |
+| **Request guards and decorators** | Validate mobile headers once and expose typed device context. Register JWT and role guards on the routes they protect. Parameter decorators expose the verified user and device. Keep request summaries redacted. |
 | **Configuration and operations** | Validate environment settings at startup. Register a Redis-backed limiter with a default budget, tighter policies for sensitive routes, and separate counters for login IP and account. Return 429 with `Retry-After` and 503 if required enforcement fails. Use safe logs and probe required dependencies. |
-| **Background work** | Separate API and worker roles when they need to scale independently. Keep batches and retries bounded, treat job delivery as potentially repeated, and make webhook or job side effects safe to retry. |
+| **Background work** | Register schedules only for workloads that need them. Use a typed scheduler flag, stable job IDs, ordered domain steps for real pipelines, bounded batches and retry-safe side effects. Separate API and worker roles when needed. |
 | **CI/CD** | Gate releases on checks, promote an immutable artifact, run required migrations once per environment release, and verify readiness and smoke tests. Track the previous artifact and its schema compatibility for rollback. |
 
 The task determines the verification. A query change calls for evidence about query count or result shape. An auth change may need checks for ownership, expiry, replay, or immediate revocation. A storage change should distinguish a missing key from an outage. The agent reports which checks it ran and what still needs a real database, Redis instance, or deployment environment.
@@ -130,8 +134,10 @@ The task determines the verification. A query change calls for evidence about qu
 | [Errors and i18n](references/errors-and-i18n.md) | Typed error registry, global filter, localized response contract, and release catalogs. |
 | [Data and Redis](references/data-and-redis.md) | Batching, pagination, index selection, transaction ownership, and Redis failure policies. |
 | [Identity](references/identity.md) | Registration, login, refresh rotation, recovery, OAuth, device registration, and permissions. |
+| [Request boundary](references/request-boundary.md) | Header, JWT and role guards, decorators, and Fastify request hooks. |
 | [Operations](references/operations.md) | Bootstrap, validation, config, rate limits, logs, health, and verification. |
 | [Background work](references/background-work.md) | Workers, scheduling, idempotency, retries, and resource limits. |
+| [Docker](references/docker.md) | Compose, Bash start/stop scripts, and API/worker image commands. |
 | [CI/CD](references/ci-cd.md) | Pull request checks, containers, migration order, release credentials, and rollback. |
 
 ## License

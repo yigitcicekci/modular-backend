@@ -3,6 +3,7 @@
 ## Contents
 
 - API/worker separation
+- Job manager and pipelines
 - Queue delivery and retry semantics
 - Webhook idempotency
 - Scheduling and bounded batches
@@ -27,6 +28,56 @@ bootstrapWorker().catch((error) => {
 ```
 
 Use the project's safe logger and fail-fast lifecycle; close partially initialized resources on bootstrap failure. Do not keep a half-initialized process running merely because its port opened. In containers, start the actual Node process with signals reaching it; do not add PM2 inside every container without a concrete process-management need.
+
+## Job manager and pipelines
+
+Use `@nestjs/schedule` for real periodic work, with `ScheduleModule.forRoot()` in the scheduler graph and a typed `JOBS_ENABLED` flag defaulting to false until intentionally enabled. Use an API graph without the scheduler and consumers. Long or retryable delivery can use an existing queue, such as BullMQ for a Redis-based worker, when a direct scheduled domain call is insufficient. Register the producer and processor against the same queue name and configuration. Avoid a queue or generic pipeline framework for a single task.
+
+When a workflow has multiple dependent steps, a `JobManagerService` maps triggers to stable job IDs and calls typed domain steps in order. Keep each step in its owning service. Add a `JobParameterRepository` only for operational settings that must change without a deploy. Upsert parameter rows by job ID, validate bounded values when read, and track per-job enablement separately from the process flag. For audit/history needs, persist run ID, trigger, start/end timestamps, and per-step counts or status. Use a terminal `failed` status if a required step throws. Do not log raw payloads or return success after partial failure.
+
+```ts
+// src/workers/jobs/job-manager.service.ts
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Cron } from '@nestjs/schedule';
+import { MaintenanceService } from '../../modules/maintenance/maintenance.service';
+
+@Injectable()
+export class JobManagerService {
+  constructor(
+    private readonly config: ConfigService<{ JOBS_ENABLED: boolean }, true>,
+    private readonly maintenance: MaintenanceService,
+  ) {}
+
+  @Cron('15 4 * * *', { name: 'daily-maintenance', timeZone: 'UTC', waitForCompletion: true })
+  async dailyMaintenance() {
+    if (!this.config.get('JOBS_ENABLED', { infer: true })) return { status: 'disabled' } as const;
+    const now = new Date();
+    const runKey = `daily-maintenance:${now.toISOString().slice(0, 10)}`;
+    const archived = await this.maintenance.archiveEligible(runKey, now);
+    const deleted = await this.maintenance.pruneExpired(runKey, now);
+    return { status: 'completed', archived, deleted } as const;
+  }
+}
+```
+
+Configure the boolean through startup validation, so the string `false` cannot enable execution. Register the provider in the worker module, with the config provider and owning domain module imported. The service methods use idempotent transitions or durable per-step checkpoints based on the operation. A UTC date key identifies the scheduled period, while a separate attempt ID identifies an individual run. If catch-up is required, pass the target scheduled period explicitly instead of assuming today's date. A local `waitForCompletion` skips overlapping ticks in that process. If replicas or deployment overlap can trigger the same work, add an atomic claim and idempotency in storage or use queue-native scheduling. [Nest task scheduling](https://docs.nestjs.com/techniques/task-scheduling)
+
+Manual work uses the same domain entry point and is auditable. Expose a CLI or an explicitly authorized operator route only when needed. Return HTTP 202 after successful durable enqueue, or return the outcome if execution is synchronous. A mobile-header exemption alone is insufficient for operator access.
+
+When operators need stored parameters, the repository can provision a job with an atomic upsert. Keep the typed defaults small and validate overrides before the runner uses them.
+
+```ts
+// JobParameterRepository, Prisma. JobParameter.id is the unique job ID.
+getOrCreate(id: string, defaults: { batchSize: number; maxBatches: number }) {
+  return this.prisma.jobParameter.upsert({
+    where: { id },
+    create: { id, disabled: true, parameters: defaults },
+    update: {},
+    select: { disabled: true, parameters: true },
+  });
+}
+```
 
 ## Queue delivery and retry semantics
 
@@ -104,16 +155,17 @@ Use a single scheduler role, queue-native scheduler, or a suitable distributed c
 
 ```ts
 // BatchService; repository implements stable cursor order and bounded reads.
-let cursor: string | undefined;
-for (;;) {
+let cursor = startingCursor;
+for (let page = 0; page < JOB_POLICY.maxBatches; page++) {
   const batch = await this.repository.findPendingAfter(cursor, JOB_POLICY.batchSize);
-  if (!batch.length) break;
+  if (!batch.length) return { exhausted: true };
   await this.processor.processBatch(batch);
   cursor = batch[batch.length - 1].id;
 }
+return { exhausted: false, nextCursor: cursor };
 ```
 
-Cursor and pending-state mutations must not skip records; checkpoint/retry behavior belongs to the actual operation. Load recipient tokens/languages in batches, use Map lookups, and apply bounded provider batches rather than per-user SQL or unbounded Promise.all. A batch-size constant belongs in shared job config when reused. Keep the operation retryable after a partial batch; do not mark the entire run successful when a required step failed.
+Cursor and pending-state mutations must not skip records; checkpoint/retry behavior belongs to the actual operation. When a run reaches its budget, save/schedule the continuation if necessary for timely completion. Load recipient tokens/languages in batches, use Map lookups, and apply bounded provider batches rather than per-user SQL or unbounded Promise.all. A batch-size constant belongs in shared job config when reused. Keep the operation retryable after a partial batch; do not mark the entire run successful when a required step failed.
 
 For a short Redis coordination lease, acquire atomically with value and expiry in one SET. Do not split SETNX and EXPIRE. Releasing requires ownership checking, and a lease alone is insufficient for critical work that could outlive its expiry; use fencing/conditional writes or queue ownership where required.
 

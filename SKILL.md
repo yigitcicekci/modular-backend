@@ -1,6 +1,6 @@
 ---
 name: modular-backend
-description: Build, extend, refactor, or fix NestJS and Node.js backends with Fastify, AppBuilder, Helmet, modular controller/service/repository boundaries, Redis storage, shared rate limiting, and cursor pagination. Apply efficient queries, identity, background work, and CI/CD to new backends and existing systems.
+description: Build, extend, refactor, or fix modular NestJS and Node.js backends with Fastify, AppBuilder, Helmet, localized errors, Redis storage, rate limiting, and cursor pagination. Apply efficient queries, JWT and device auth, request guards, scheduled jobs, Docker, and CI/CD to new backends and existing systems.
 license: MIT
 ---
 
@@ -15,12 +15,14 @@ Complete the requested behavior with the smallest readable change. Apply these c
 | New module, structural refactor, DTOs, dependency injection | [Architecture](references/architecture.md) |
 | Error contracts, validation failures, global filters, i18n | [Errors and i18n](references/errors-and-i18n.md) |
 | Queries, indexes, transactions, Redis, cache/storage behavior | [Data and Redis](references/data-and-redis.md) |
-| User, auth, sessions, OAuth, device, permissions | [Identity](references/identity.md) |
+| User, auth packages, sessions, OAuth, devices, fingerprints, password/IP hashing | [Identity](references/identity.md) |
+| Header and JWT guards, middleware, route and parameter decorators | [Request boundary](references/request-boundary.md) |
 | Bootstrap, config, rate limits, logs, health, verification | [Operations](references/operations.md) |
 | Queues, workers, schedules, webhook idempotency, resource limits | [Background work](references/background-work.md) |
+| Dockerfile, local Compose, start/stop Bash scripts, API/worker commands | [Docker](references/docker.md) |
 | CI checks, containers, migrations, releases, rollback | [CI/CD](references/ci-cd.md) |
 
-For a new backend, foundation overhaul, or request to fix missing baseline components, read Architecture, Operations, Errors and i18n, and Data and Redis before editing. Read other references as the task needs them. Adapt examples to the installed versions and actual domain. Use portable Markdown and standard project tools. Follow the host agent's permission model.
+For a new backend, foundation overhaul, or request to fix missing baseline components, read Architecture, Operations, Errors and i18n, Request boundary, Docker, and Data and Redis before editing. Read other references as the task needs them. Adapt examples to the installed versions and actual domain. Use portable Markdown and standard project tools. Follow the host agent's permission model.
 
 ## Establish scope before editing
 
@@ -38,8 +40,10 @@ Use the closest existing module that follows these rules as the model for naming
 - **Redis-owned and prepared reads stay on Redis.** Set the population, update, missing-key, expiry, outage, and recovery behavior per key family. Use typed absence for a genuine missing entity and typed unavailable for an outage or a required projection that is not ready. A request never queries SQL as a fallback for these roles. Use an explicit cache-aside exception only for an agreed disposable cache. Preserve an existing read contract on unrelated revisions.
 - **Wire shared rate limiting for HTTP.** Register the enforcement guard or hook and configure a default budget for external routes. Add tighter Redis-backed budgets to auth, recovery, and expensive actions that exist. Use separate IP and normalized account counters for password login. Increment and expire atomically, respond with 429 and `Retry-After`, and return typed 503 when required enforcement is unavailable. Use an explicit policy for system route exemptions.
 - **Paginate every growing collection exposed by HTTP.** Use a validated query DTO, bounded limit, and a stable keyset cursor containing every sort value plus a unique tie-breaker. Query `limit + 1` with the caller's scope and filters in the repository. Return `{ items, nextCursor }` for new lists. Calculate exact totals and use page-number offset only when the API contract needs them.
+- **Wire the guards and decorators the API uses.** Use a typed header guard for a mobile/device contract, a JWT guard for protected JWT routes, and role, guest, or provider-specific guards where the policy needs them. Register the guards and consume their validated context using parameter decorators. Use Fastify request hooks or existing middleware for cross-cutting transport concerns.
+- **Deliver a runnable Docker workflow.** Provide or reuse a Dockerfile, Compose for local dependencies, and project-scoped Bash start/stop commands. Wait for readiness and use durable volumes for authoritative data. Retain an equivalent established workflow on revisions. Run job schedules and consumers only when the workload warrants them.
 - Implement only required modules/features. Auth/user/device workflows are reusable guidance, not permission to add account features to a service that does not need them.
-- Use Node.js built-ins and official NestJS modules first. The approved baseline includes compatible `@fastify/helmet`, a single Redis client, and `nestjs-i18n` for Nest HTTP errors if no suitable i18n integration is installed. Keep the existing working Redis client, including ioredis if used. Default to `redis` (node-redis) for a new project without one. Use `fastify` directly where imported. Other new third-party packages, optional peers and Fastify plugins require explicit approval. See [Operations](references/operations.md#package-policy).
+- Use Node.js built-ins and official NestJS modules first. The approved baseline includes compatible `@fastify/helmet`, a single Redis client, and `nestjs-i18n` for Nest HTTP errors if no suitable i18n integration is installed. A new password-auth flow may use compatible `argon2` for Argon2id; use `node:crypto` for token digests and keyed fingerprints. Keep the existing working Redis client or default to `redis` for a new project. Use `fastify` directly where imported. Other new third-party packages, optional peers and Fastify plugins require explicit approval. See [Operations](references/operations.md#package-policy).
 - Deliver connected bootstrap, validated config, providers, required migrations, local setup, and the requested APIs. Do not stop at disconnected scaffold files.
 
 ### Existing backend / revision

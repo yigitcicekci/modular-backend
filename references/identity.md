@@ -3,6 +3,7 @@
 ## Contents
 
 - Responsibilities and feature selection
+- JWT, passwords, and fingerprints
 - User and authorization
 - Registration and login
 - Refresh rotation and concurrency
@@ -25,6 +26,119 @@
 Do not generate every feature automatically. Use the requested login methods and platforms. Email/password implies safe hashing and the appropriate recovery/verification flows. OAuth-only products do not need unused password endpoints. Device/push features belong only in products using them. Keep session logic within auth until a separate module has a concrete consumer.
 
 In new token-based APIs, short-lived access tokens with separately managed rotating refresh sessions are a useful starting design. Preserve a sound existing cookie-session or external identity system; JWT is not mandatory. Never hand-roll signatures or password hashing. Select maintained installed libraries, adapting to actual versions. For a new password hasher, prefer Argon2id with parameters checked against current OWASP guidance and measured on deployment hardware. Retain existing secure hashes; migrate legacy hashes on verified login when necessary. Never reduce hashing work to minimize complexity.
+
+## JWT, passwords, and fingerprints
+
+For a Nest JWT API, use `@nestjs/jwt` via `JwtModule.register({})` when `TokenService` supplies explicit purpose-specific options. Use existing `@nestjs/config` or validated config providers. A direct Nest `CanActivate` guard can use `TokenService` without Passport. Keep Passport if the application already uses its strategy flow. Add a provider SDK or a Fastify cookie integration only for an actual provider flow or browser cookie contract. Use `argon2` for new Argon2id password verification when there is no suitable installed hasher. Check that its native module loads in the release image.
+
+```ts
+// src/modules/authentication/token.service.ts
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'node:crypto';
+import { AppException } from '../../common/exceptions/app.exception';
+
+type Purpose = 'access' | 'refresh';
+type Claims = { sub: string; sid: string; purpose: Purpose; exp: number };
+type JwtPolicy = { secret: string; issuer: string; audience: string; expiresInSeconds: number };
+type AuthConfig = { AUTH_TOKENS: Record<Purpose, JwtPolicy> };
+
+@Injectable()
+export class TokenService {
+  private readonly policy: AuthConfig['AUTH_TOKENS'];
+
+  constructor(private readonly jwt: JwtService, config: ConfigService<AuthConfig, true>) {
+    this.policy = config.get('AUTH_TOKENS', { infer: true });
+  }
+
+  sign(userId: string, sessionId: string, purpose: Purpose) {
+    const { secret, expiresInSeconds, issuer, audience } = this.policy[purpose];
+    return this.jwt.signAsync({ sub: userId, sid: sessionId, purpose }, {
+      secret, algorithm: 'HS256', issuer, audience, expiresIn: expiresInSeconds,
+      jwtid: randomUUID(),
+    });
+  }
+
+  async verify(token: string, purpose: Purpose): Promise<Claims> {
+    const { secret, issuer, audience } = this.policy[purpose];
+    const claims = await this.jwt.verifyAsync<Claims>(token, {
+      secret, issuer, audience, algorithms: ['HS256'],
+    }).catch(() => { throw new AppException('INVALID_TOKEN'); });
+    if (claims.purpose !== purpose || typeof claims.sub !== 'string' || !claims.sub ||
+        typeof claims.sid !== 'string' || !claims.sid || !Number.isFinite(claims.exp)) {
+      throw new AppException('INVALID_TOKEN');
+    }
+    return claims;
+  }
+}
+```
+
+Load `AUTH_TOKENS` from validated startup config. Validate separate signing keys, issuers, audiences and positive TTLs before bootstrap. Keep the issuer, audience, signing algorithm, expiration, and token purpose checks in the active verification path. Map expired access/refresh to separate typed codes when clients need that distinction. Keep existing claim meanings during migration. Refresh may instead use the opaque secret below. When signing JWT refresh tokens, store their digest and use the same atomic rotation as for opaque refresh. [Nest JWT](https://github.com/nestjs/jwt)
+
+```ts
+// src/modules/authentication/password.service.ts
+import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import argon2 from 'argon2';
+
+@Injectable()
+export class PasswordService implements OnModuleInit {
+  private readonly pepper: Buffer;
+  private dummyHash!: string;
+
+  constructor(config: ConfigService) {
+    this.pepper = Buffer.from(config.getOrThrow<string>('PASSWORD_PEPPER'), 'base64');
+  }
+
+  async onModuleInit() {
+    this.dummyHash = await this.hash('password-verification-placeholder');
+  }
+
+  hash(password: string) {
+    return argon2.hash(password, {
+      type: argon2.argon2id, memoryCost: 19_456, timeCost: 2,
+      parallelism: 1, hashLength: 32, secret: this.pepper,
+    });
+  }
+
+  verify(password: string, hash?: string | null) {
+    return argon2.verify(hash ?? this.dummyHash, password, { secret: this.pepper });
+  }
+}
+```
+
+Validate a dedicated high-entropy `PASSWORD_PEPPER` in shared config for this peppered design. Store it in the secret store and plan rotation before rollout. Existing unpeppered hashes need a migration before switching verification. Let Argon2 generate a fresh salt per password. Apply independent IP/account budgets before hashing and bound inputs without silently truncating passwords. Never lower the work factor to speed up a controller. Tune the example settings on the deployment hardware. [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+
+| Value | Representation and use |
+| --- | --- |
+| Password | Salted Argon2id hash. Verify with the hasher and avoid sending or logging it. |
+| Access, refresh, or reset bearer credential | Full SHA-256 digest of the high-entropy token when persistence or revocation needs comparison. Verify a JWT before using its digest to match state. Use constant-time comparison for in-memory secret-digest checks; atomic datastore equality remains the rotation predicate. |
+| IP, normalized login identifier, or validated installation ID | HMAC-SHA-256 with a dedicated secret and versioned, purpose-specific input for rate limiting or scoped pseudonymous identifiers. Store only where needed with a defined TTL. An IP fingerprint is a signal for rate limiting, since NAT, proxies and network changes make it unsuitable as an account credential. |
+
+```ts
+// src/common/utils/fingerprint.util.ts
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+
+export function tokenFingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+export function matchesTokenFingerprint(token: string, storedHex: string): boolean {
+  if (!/^[0-9a-f]{64}$/i.test(storedHex)) return false;
+  return timingSafeEqual(Buffer.from(tokenFingerprint(token), 'hex'), Buffer.from(storedHex, 'hex'));
+}
+
+export function keyedFingerprint(
+  key: Buffer, purpose: 'login-ip' | 'login-account' | 'installation', value: string,
+): string {
+  return createHmac('sha256', key)
+    .update(JSON.stringify(['fingerprint-v1', purpose, value]))
+    .digest('hex');
+}
+```
+
+For a login IP key, call `keyedFingerprint(config.rateLimitFingerprintKey, 'login-ip', canonicalIp)` using the trusted-proxy `request.ip` from Fastify. Normalize equivalent address forms for the actual ingress, including mapped IPv4 when present. Account keys use the same normalized identity as credential lookup and a separate purpose. Bind installation fingerprints to the verified owner when used across accounts, for example by fingerprinting `JSON.stringify([userId, installationId])`. Do not build a browser fingerprint from IP or device model by default. Avoid writing raw addresses, credentials, or fingerprint values to request logs. [Node.js crypto](https://nodejs.org/api/crypto.html)
 
 ## User and authorization
 
@@ -62,6 +176,8 @@ findOwned(userId: string, noteId: string) {
 
 Use roles only when the product needs them; record ownership does not disappear because a role check exists. Never spread an HTTP body into Prisma update data, even if a TypeScript cast appears to constrain it.
 
+Let `UserService` own account eligibility, reserved names, profile edit cooldowns, language/preferences, and account lifecycle where applicable. Return typed errors and limited DTOs. Use a repository constraint for unique public names and a conditional write for a real cooldown. Use an explicit account kind for guest restrictions. Revoking, disabling or deleting a user must take effect in the authoritative session path. Read [Request boundary](request-boundary.md) for guards and parameter decorators.
+
 ## Registration and login
 
 Registration: validate -> normalize identity according to the existing policy -> hash password and prepare session -> create user/session in a shared transaction -> return only after commit. Use DB uniqueness to resolve concurrent registrations; a precheck alone is insufficient. Map the specific identity uniqueness violation, not every database error, to the chosen safe registration response. Do not lowercase passwords or invent provider-specific email rewrites.
@@ -69,14 +185,11 @@ Registration: validate -> normalize identity according to the existing policy ->
 Use the service/repository transaction example in [Data and Redis](data-and-redis.md). If a required session is Redis-primary, SQL user creation and session creation are not one atomic transaction; define orphan-user cleanup/retry or explicit login-after-register behavior instead of claiming cross-store atomicity. Email delivery happens after commit, with an honest response/retry contract.
 
 ```ts
-// AuthService fragment. passwords.dummyHash is a valid precomputed hash using
-// the configured hasher, prepared once; no expensive hash generation per miss.
+// AuthService fragment; PasswordService uses its startup dummy hash on a miss.
 async login(input: LoginDto, context: AuthContext) {
   await this.loginLimits.check(input.email, context.ipAddress);
   const user = await this.users.findCredentials(normalizeEmail(input.email));
-  const matches = await this.passwords.verify(
-    input.password, user?.passwordHash ?? this.passwords.dummyHash,
-  );
+  const matches = await this.passwords.verify(input.password, user?.passwordHash);
   if (!user || !matches || !user.enabled || user.blocked || user.deletedAt) {
     throw new AppException('INVALID_CREDENTIALS');
   }
@@ -180,17 +293,22 @@ Before implementation, choose one authoritative strategy and state effective rev
 For new token APIs needing immediate revocation, prefer a checked authoritative session design. Do not invent a DB/Redis dual-write consistency protocol when a simpler primary-session design meets requirements. If the product accepts bounded access-token validity, state that bound and keep tokens short-lived according to its risk/UX needs. Existing projects retain their contract unless the requested change includes migration.
 
 ```ts
-// Auth guard/service fragment for an explicitly Redis-primary session design.
-const claims = await this.tokens.verifyAccess(rawAccessToken);
-const session = await this.sessionRepository.findActive(claims.sid);
-// Repository propagates Redis outage; it does not return null for errors.
-if (!session || session.userId !== claims.sub || session.expiresAt <= Date.now()) {
-  throw new AppException('INVALID_SESSION');
+// SessionService method for a device-bound, fingerprint-checked access session.
+async requireActiveAccess(input: {
+  sessionId: string; userId: string; installationId?: string; rawToken: string;
+}): Promise<AuthContext> {
+  // Returns active state with current account eligibility, or propagates store outage.
+  const session = await this.repository.findActiveAccess(input.sessionId);
+  if (!session || session.userId !== input.userId || session.accessExpiresAt <= Date.now() ||
+      !input.installationId || session.installationId !== input.installationId ||
+      !matchesTokenFingerprint(input.rawToken, session.accessFingerprint)) {
+    throw new AppException('INVALID_SESSION');
+  }
+  return { userId: session.userId, sessionId: input.sessionId, role: session.role };
 }
-return { id: session.userId, sessionId: claims.sid };
 ```
 
-findActive must enforce revocation and needed current account state. Disable/delete must invalidate the affected active sessions, including any account-status cache. Define races and recovery rather than claiming SQL+Redis atomicity. Avoid a DB read/write on every request purely for lastSeen: throttle activity persistence with Redis only if required and define outage behavior. User-wide revocation can use a user/session index or version if needed; bound cleanup and account for concurrent login/revoke.
+`findActiveAccess` must enforce revocation and needed current account state. Disable/delete must invalidate the affected active sessions, including any account-status cache. Define races and recovery rather than claiming SQL+Redis atomicity. Avoid a DB read/write on every request purely for lastSeen: throttle activity persistence with Redis only if required and define outage behavior. User-wide revocation can use a user/session index or version if needed; bound cleanup and account for concurrent login/revoke.
 
 ## Web and OAuth
 
@@ -214,11 +332,13 @@ return this.socialLogin.authenticate({
 }, context);
 ```
 
-The identity repository enforces a unique provider/issuer/subject relation. Product policy controls registration/linking; verifiedEmail is not automatic permission to claim an existing local account. Do not add mock authentication bypasses to production routes.
+The identity repository enforces a unique provider/issuer/subject relation. Product policy controls registration/linking; verifiedEmail is not automatic permission to claim an existing local account. Use the existing provider verifier or its supported production library when the provider flow is requested. Apply a bounded timeout to external exchange/verification calls, and configure allowlisted client IDs for each supported app. Do not add mock authentication bypasses to production routes.
 
 ## Device and push tokens
 
 Device identity is untrusted metadata, not proof of authentication. Associate devices using the authenticated user and a validated installation ID. Do not assume one device per OS or one session per device unless required. IP and device headers are not stable credentials.
+
+For device-bound mobile sessions, keep the device row's server ID stable. Store installation ID, owner, platform, model, app version and optional notification settings. Associate the session with the row and verify both owner and installation on protected requests and refresh. Reuse the same installation row across logins. A one-device-per-platform policy needs an explicit replacement and old-session revocation contract. Keep device metadata durable even if Redis is authoritative for active sessions. Use a shared read contract for account/session status and logout, with no implicit SQL fallback for Redis-owned auth state.
 
 ```ts
 // DeviceRepository; schema has @@unique([ownerId, installationId]).
@@ -227,9 +347,9 @@ upsertMetadata(ownerId: string, input: DeviceMetadataDto) {
     where: { ownerId_installationId: { ownerId, installationId: input.installationId } },
     create: {
       ownerId, installationId: input.installationId,
-      platform: input.platform, appVersion: input.appVersion,
+      platform: input.platform, model: input.model, appVersion: input.appVersion,
     },
-    update: { platform: input.platform, appVersion: input.appVersion },
+    update: { platform: input.platform, model: input.model, appVersion: input.appVersion },
     select: { id: true, platform: true, appVersion: true },
   });
 }
@@ -244,6 +364,7 @@ Test the paths changed by the task, not every feature in this reference:
 - Allowed profile fields; cross-user/tenant read and update denial; safe response projection.
 - Registration uniqueness race; failed session creation does not return usable credentials.
 - Unknown/wrong/disabled login; limits shared across instances; expired and wrong-purpose tokens.
+- Fresh password salts and valid/invalid verification; HMAC stability and purpose isolation; changed token rejected by its stored digest.
 - Refresh atomic winner, replay policy, concurrent requests, absolute expiry and revoked users.
 - Reset/verification replay and rollback; generic recovery response.
 - Logout/revoke-all effect on the actual guard; Redis outage and invalidation failure.

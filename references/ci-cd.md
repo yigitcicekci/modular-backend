@@ -124,6 +124,8 @@ Filename globs are not a complete secret policy; inspect intended build inputs a
 
 Build only needed architectures. Do not copy host-compiled native binaries/Prisma engines into a different target architecture. If cross-compilation is necessary, use pinned upstream sources and verify native artifact architecture. Test the built runtime image and API/worker entrypoints, not only a builder's test suite. Capture the pushed digest and deploy that exact digest, not latest or a tag that can be overwritten.
 
+Use the [Docker guide](docker.md) to deliver local Compose dependencies, start/stop scripts, and API/worker smoke commands alongside the release image.
+
 ## Migration and deployment order
 
 Keep migrations in version control. Use the ORM's locked deployment command, not a dev migration or schema-push command against production. With the project's PrismaClient-era CLI, a migration job may use:
