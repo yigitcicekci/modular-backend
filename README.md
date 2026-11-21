@@ -31,7 +31,8 @@ The agent starts with [SKILL.md](SKILL.md) and opens the references relevant to 
 | Starting point | How the agent proceeds |
 | --- | --- |
 | **New backend or foundation overhaul** | Uses Fastify through AppBuilder with Helmet and active Redis-backed rate limiting. Wires validated Redis config, delivers a Redis-owned feature, and uses bounded keyset pagination for growing lists. |
-| **Existing backend** | Traces callers and dependencies. Applies the conventions to the code involved in the request while preserving API responses, authorization and ownership filters, transaction behavior, and compatibility with existing data. Updates wiring, tests, and consumers as needed. |
+| **Backend-wide revision** | “Revise this backend according to modular-backend” covers the foundation, modules, database, Redis, and delivery checks. The agent fixes applicable gaps, runs the acceptance checks, and reports unresolved compatibility or migration decisions. |
+| **Focused revision** | “Revise the auth module according to modular-backend” covers that module and its affected callers. The agent preserves API responses, authorization and ownership filters, transaction behavior, and compatibility with existing data. |
 
 The examples use tools such as Prisma, BullMQ, Docker, and GitHub Actions to show the approach in code. The agent adapts them to the installed ORM, queue, Redis client, and delivery platform. It adds optional features such as device registration, push notifications, or workers when the requested workload calls for them.
 

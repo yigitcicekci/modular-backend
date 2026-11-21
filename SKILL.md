@@ -25,6 +25,10 @@ For a new backend, foundation overhaul, or request to fix missing baseline compo
 
 Read repository instructions, package manifest, bootstrap, affected modules and callers, relevant schemas, Redis usage, and tests. Use config definitions and example variable names rather than reading secrets. Briefly identify affected layers/files, observable behavior, and necessary checks. Resolve routine choices from existing code; ask only when a missing product decision changes behavior or data ownership.
 
+A request such as **"Revise this backend according to modular-backend"** with no narrower target is a backend-wide revision. Apply both the foundation and existing-backend rules. Inventory the HTTP bootstrap, feature modules, database and Redis paths, and delivery checks. Identify gaps against the applicable references, fix them within the requested scope, and run the foundation acceptance checks. Report any gap that requires an unresolved contract, data migration, or ownership decision. If the request names a specific feature, endpoint, or bug, apply the rules to that path and its affected callers.
+
+Use the closest existing module that follows these rules as the model for naming, file placement, DTOs, errors, and transaction style.
+
 ### New backend, foundation overhaul, or baseline remediation
 
 - **AppBuilder and Helmet are required for HTTP.** Keep `src/main.ts` thin and put HTTP construction in `src/builder/app.builder.ts`. Use an explicit Nest `FastifyAdapter` or direct `fastify` for Node.js HTTP without Nest. Register compatible `@fastify/helmet` before initialization or listening. Bind the real builder in HTTP integration tests. Workers without HTTP use their own entry point.
