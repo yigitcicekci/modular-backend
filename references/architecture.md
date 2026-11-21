@@ -140,33 +140,7 @@ Service chooses the transition; repository enforces its predicate atomically. Re
 
 ## Typed errors
 
-Reuse the project's error mechanism. For a new project, this combined example is enough; put domain errors in the module and the registry/exception in common.
-
-```ts
-import { HttpException, HttpStatus } from '@nestjs/common';
-
-type ErrorDefinition = { status: HttpStatus; message: string };
-export const BookErrors = {
-  BOOK_TITLE_REQUIRED: {
-    status: HttpStatus.BAD_REQUEST, message: 'Book title is required',
-  },
-  BOOK_NOT_ACTIVE_OR_NOT_FOUND: {
-    status: HttpStatus.NOT_FOUND, message: 'Active book not found',
-  },
-} as const satisfies Record<string, ErrorDefinition>;
-
-export const ErrorRegistry = { ...BookErrors } as const;
-export type ErrorCode = keyof typeof ErrorRegistry;
-
-export class AppException extends HttpException {
-  constructor(code: ErrorCode) {
-    const { status, message } = ErrorRegistry[code];
-    super({ code, message }, status);
-  }
-}
-```
-
-Preserve messageKey localization if present. Prefix codes by domain; check added registry keys for collisions. No subclass per error. The global filter preserves the error envelope, maps validation and known infrastructure errors, and responds generically to unknown failures while logging safe context. Do not add catch blocks throughout services merely to rethrow.
+Define errors in the owning module and combine the definitions in a typed registry. Services throw an `AppException` with the registered code. The shared HTTP filter resolves and translates it. Use the complete [error and i18n setup](errors-and-i18n.md) for the definitions, catalogs, filter, and response contract.
 
 ## Cross-module use and safe revisions
 

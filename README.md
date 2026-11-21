@@ -30,7 +30,7 @@ The agent starts with [SKILL.md](SKILL.md) and opens the references relevant to 
 
 | Starting point | How the agent proceeds |
 | --- | --- |
-| **New backend or foundation overhaul** | Uses Fastify through AppBuilder with Helmet and active Redis-backed rate limiting. Wires validated Redis config, delivers a Redis-owned feature, and uses bounded keyset pagination for growing lists. |
+| **New backend or foundation overhaul** | Uses Fastify through AppBuilder with Helmet, localized HTTP errors, and active Redis-backed rate limiting. Wires validated Redis config, delivers a Redis-owned feature, and uses bounded keyset pagination for growing lists. |
 | **Backend-wide revision** | “Revise this backend according to modular-backend” covers the foundation, modules, database, Redis, and delivery checks. The agent fixes applicable gaps, runs the acceptance checks, and reports unresolved compatibility or migration decisions. |
 | **Focused revision** | “Revise the auth module according to modular-backend” covers that module and its affected callers. The agent preserves API responses, authorization and ownership filters, transaction behavior, and compatibility with existing data. |
 
@@ -70,11 +70,21 @@ For example, when an authenticated user archives a book, the controller supplies
 
 Business actions in another domain go through that domain's service. An exported repository can be called directly for data-only work or a shared transaction. If a workflow spans repositories, the service can start the transaction and pass the same client to each participant. A repository can manage a self-contained atomic operation. Domain helpers stay local until another module actually needs them.
 
+## Error responses and i18n
+
+Each feature defines its own errors with a stable `code`, an HTTP `status`, and a translation `messageKey`. A typed registry collects the definitions. Services throw `AppException`; a single global HTTP filter translates the message using the request locale and sends the response. Clients branch on `code`, which remains identical in every locale.
+
+```json
+{"status":404,"code":"BOOK_NOT_ACTIVE_OR_NOT_FOUND","message":"Etkin kitap bulunamadı."}
+```
+
+The same filter handles framework and validation errors, preserves headers such as `Retry-After`, and returns a generic localized message for unexpected failures. Existing APIs keep their published response fields until a compatible migration. The reference includes the filter, locale configuration, catalog packaging, and integration checks. [Errors and i18n](references/errors-and-i18n.md)
+
 ## Bootstrap and packages
 
 The HTTP app is created in `src/builder/app.builder.ts` and started by `src/main.ts`. The builder sets up Fastify, registers `@fastify/helmet` before initialization, and applies the validated HTTP configuration. Integration tests use the same builder and verify headers on a live route through Fastify injection. Nest providers own external service initialization and cleanup.
 
-Use Node.js built-ins and official Nest modules wherever they meet the need. Fastify, its compatible Helmet plugin, and one Redis client are the baseline package choices. Reuse the project's existing Redis client, or use node-redis for a new project. Additional third-party packages require an explicit decision.
+Use Node.js built-ins and official Nest modules wherever they meet the need. Fastify, its compatible Helmet plugin, and one Redis client are the baseline package choices. Reuse the project's existing Redis client, or use node-redis for a new project. For localized Nest HTTP errors, reuse the installed i18n integration or use `nestjs-i18n`. Additional third-party packages require an explicit decision.
 
 ## Query performance and Redis
 
@@ -116,7 +126,8 @@ The task determines the verification. A query change calls for evidence about qu
 
 | Read | For |
 | --- | --- |
-| [Architecture](references/architecture.md) | Module layout, DTOs, dependency injection, typed errors, and safe refactoring. |
+| [Architecture](references/architecture.md) | Module layout, DTOs, dependency injection, and safe refactoring. |
+| [Errors and i18n](references/errors-and-i18n.md) | Typed error registry, global filter, localized response contract, and release catalogs. |
 | [Data and Redis](references/data-and-redis.md) | Batching, pagination, index selection, transaction ownership, and Redis failure policies. |
 | [Identity](references/identity.md) | Registration, login, refresh rotation, recovery, OAuth, device registration, and permissions. |
 | [Operations](references/operations.md) | Bootstrap, validation, config, rate limits, logs, health, and verification. |
