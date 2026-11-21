@@ -30,9 +30,11 @@ The agent starts with [SKILL.md](SKILL.md) and opens the references relevant to 
 
 | Starting point | How the agent proceeds |
 | --- | --- |
-| **New backend or foundation overhaul** | Uses Fastify through AppBuilder with Helmet, localized HTTP errors, and active Redis-backed rate limiting. Wires validated Redis config, delivers a Redis-owned feature, and uses bounded keyset pagination for growing lists. |
-| **Backend-wide revision** | “Revise this backend according to modular-backend” covers the foundation, modules, database, Redis, and delivery checks. The agent fixes applicable gaps, runs the acceptance checks, and reports unresolved compatibility or migration decisions. |
-| **Focused revision** | “Revise the auth module according to modular-backend” covers that module and its affected callers. The agent preserves API responses, authorization and ownership filters, transaction behavior, and compatibility with existing data. |
+| **New backend** | Applies the full foundation directly. Uses Fastify through AppBuilder with Helmet, localized HTTP errors, shared Redis key templates and rate limiting, bounded pagination, and Docker. Adds the product flows the request calls for. |
+| **Backend-wide revision** | “Revise this backend according to modular-backend” starts with a read-only architecture assessment. The agent presents the current and proposed architecture, groups what to keep, change, add or defer, and asks which proposals to apply before editing. |
+| **Focused revision** | “Revise the auth module according to modular-backend” starts with an assessment of that module and its affected callers. The agent asks which proposals to apply. If the request already selects a specific change, the agent shares the assessment and proceeds with that change. |
+
+For an existing application, the assessment traces real entrypoints, feature boundaries, SQL and Redis ownership, and the release path where relevant. It shows which clients or stored data are affected by each proposal and how the change will be verified. The agent implements the selected scope and reports which acceptance checks ran. [Architecture assessment](references/architecture.md#existing-backend-assessment)
 
 The examples use tools such as Prisma, BullMQ, Docker, and GitHub Actions to show the approach in code. The agent adapts them to the installed ORM, queue, Redis client, and delivery platform. It adds optional features such as device registration, push notifications, or workers when the requested workload calls for them.
 
@@ -95,6 +97,8 @@ The agent looks at queries, round trips, rows, and fields before adding infrastr
 Growing lists validate the limit and cursor, fetch one extra row, and return `{ items, nextCursor }`. A chronological cursor carries the timestamp and unique row ID. The query keeps the owner or tenant scope and current filters on every page. Page numbers and exact totals are available when the API contract needs them.
 
 The baseline includes `redis.config.ts`, `redis-keys.config.ts`, and `redis-ttl.config.ts`, a shared Redis provider, and readiness checks. At least one real feature reads and writes its data through a Redis repository. For example, an authorized publisher stores the minimum supported client build in Redis and the client-config route reads it from there. The owning feature defines updates, expiry, missing-key behavior, outages, and recovery.
+
+`src/utils/redis-key.util.ts` provides `generateRedisKey` and `generateRedisKeys`. A template such as `auth:session:[session_id]` is rendered with its parameters, then the shared provider applies the app/environment namespace once. Reads, writes, and invalidation use the same template. A missing parameter fails early. Existing key strings stay compatible unless a migration is selected. [Redis key examples](references/data-and-redis.md#keys-ttls-and-command-examples)
 
 | Redis role | Example | Read policy |
 | --- | --- | --- |

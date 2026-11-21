@@ -204,8 +204,9 @@ Keep the pieces discoverable in the project:
 
 ```text
 src/config/redis.config.ts       # connection and runtime limits
-src/config/redis-keys.config.ts  # namespaces and named key builders
+src/config/redis-keys.config.ts  # static keys and named [placeholder] templates
 src/config/redis-ttl.config.ts   # expirations with explicit units
+src/utils/redis-key.util.ts      # generates relative keys from templates
 src/libs/redis/redis.module.ts   # exports the shared provider
 src/libs/redis/redis.service.ts  # client lifecycle and error boundary
 ```
@@ -260,6 +261,7 @@ import {
 import { createClient } from 'redis';
 import { AppException } from '../../common/exceptions/app.exception';
 import { REDIS_CONFIG, type RedisConfig } from '../../config/redis.config';
+import { generateRedisKey, type RedisKeyParams } from '../../utils/redis-key.util';
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnApplicationShutdown {
@@ -272,7 +274,7 @@ export class RedisService implements OnModuleInit, OnApplicationShutdown {
       disableOfflineQueue: true,
       socket: {
         connectTimeout: config.connectTimeoutMs,
-        reconnectStrategy: (attempt) => attempt < 3 ? 100 * (attempt + 1) : false,
+        reconnectStrategy: (attempt: number) => attempt < 3 ? 100 * (attempt + 1) : false,
       },
     });
     this.client.on('error', () => this.logger.warn('Redis connection error'));
@@ -286,6 +288,10 @@ export class RedisService implements OnModuleInit, OnApplicationShutdown {
       if (this.client.isOpen) this.client.destroy();
       throw new AppException('REDIS_UNAVAILABLE');
     }
+  }
+
+  key(template: string, params?: RedisKeyParams): string {
+    return `${this.config.namespace}:${generateRedisKey(template, params)}`;
   }
 
   async run<T>(operation: (redis: ReturnType<typeof createClient>) => Promise<T>) {
@@ -319,19 +325,42 @@ Keep the callback restricted to one Redis command or a single batch. Handle doma
 
 ## Keys, TTLs, and command examples
 
-Reuse existing key builders. A new project can use typed functions; no template parser needed:
+Use a shared template catalog and key utility for new Redis-backed code. Keep full key names in config. Use `[name]` for dynamic segments and plain text for static keys. The same template drives reads, writes, expiration and invalidation.
 
 ```ts
 // src/config/redis-keys.config.ts, relative keys
 export const REDIS_KEYS = {
-  publishedClientConfig: 'client-config:published',
-  session: (id: string) => `auth:session:${id}`,
-  userSessions: (id: string) => `auth:user-sessions:${id}`,
-  product: (id: string) => `catalog:product:${id}`,
-  tournamentRanks: (id: string) => `tournament:${id}:ranks`,
-  libraryCards: 'library:cards',
+  PUBLISHED_CLIENT_CONFIG: 'client-config:published',
+  SESSION: 'auth:session:[session_id]',
+  USER_SESSIONS: 'auth:user-sessions:[user_id]',
+  PRODUCT: 'catalog:product:[product_id]',
+  TOURNAMENT_RANKS: 'tournament:[tournament_id]:ranks',
+  LIBRARY_CARDS: 'library:cards',
+  RATE_LIMIT: 'rate-limit:[policy_id]:[actor_fingerprint]',
 } as const;
 ```
+
+```ts
+// src/utils/redis-key.util.ts
+export type RedisKeyParams = Readonly<Record<string, string | number>>;
+
+export function generateRedisKey(template: string, params: RedisKeyParams = {}): string {
+  return template.replace(/\[(\w+)\]/g, (_placeholder, name: string) => {
+    if (!Object.hasOwn(params, name)) {
+      throw new Error(`Missing Redis key parameter [${name}]`);
+    }
+    return encodeURIComponent(String(params[name]));
+  });
+}
+
+export function generateRedisKeys(
+  templates: readonly string[], params: RedisKeyParams = {},
+): string[] {
+  return templates.map((template) => generateRedisKey(template, params));
+}
+```
+
+`generateRedisKey('sessions:[user_id]:[generation]', { user_id: 'u42', generation: 0 })` returns `sessions:u42:0`. Repeated placeholders are replaced in one pass. `generateRedisKeys` renders several templates from the same parameters. Static keys need no params. Missing params are programming errors, so generate the key before the Redis command error boundary. Extra params support rendering several distinct templates from a shared record.
 
 ```ts
 // src/config/redis-ttl.config.ts
@@ -341,21 +370,23 @@ export const REDIS_TTL = {
 } as const;
 ```
 
-Values illustrate a policy. Prefix keys through one builder with the injected application/environment namespace. Use validated IDs or encode arbitrary segments to avoid collisions. Keep tokens, passwords and raw personal identifiers out of keys. Apply TTL to the specific key families that expire. Shared Redis infrastructure owns the connection. Repositories own domain commands and decide which keys to read or write.
+Values illustrate a policy. The utility produces relative keys. `RedisService.key()` applies the validated application/environment namespace once. Repositories use it for the same key on every operation and apply the intended TTL. Use stable internal IDs or suitable fingerprints for values. Keep credentials and raw personal identifiers out of keys. The new template format encodes dynamic segments to keep separators and Redis Cluster hash-tag delimiters out of substituted values. Where a Cluster hash tag is needed, define its braces in the template. Use a static family prefix for any glob operation. [Redis keyspace](https://redis.io/docs/latest/develop/using-commands/keyspace/) · [Redis Cluster hash tags](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/#hash-tags)
+
+Keep existing namespace, prefix, and encoding byte-for-byte when standardizing live keys. If the existing client applies a prefix, account for it so the utility does not add it a second time. Update readers, writers, locks, automation, and invalidators together when the user approves a key migration.
 
 ```ts
 // TournamentRedisRepository; node-redis method names.
 async rank(tournamentId: string, userId: string) {
-  const value = await this.redis.zRevRank(
-    REDIS_KEYS.tournamentRanks(tournamentId), userId,
-  );
+  const key = this.redis.key(REDIS_KEYS.TOURNAMENT_RANKS, { tournament_id: tournamentId });
+  const value = await this.redis.run((redis) => redis.zRevRank(key, userId));
   return value === null ? null : value + 1;
 }
 
 // LibraryRedisRepository: one batch, no invalid empty HMGET.
 getCards(isbns: string[]) {
+  const key = this.redis.key(REDIS_KEYS.LIBRARY_CARDS);
   return isbns.length
-    ? this.redis.hmGet(REDIS_KEYS.libraryCards, isbns)
+    ? this.redis.run((redis) => redis.hmGet(key, isbns))
     : Promise.resolve([]);
 }
 ```
@@ -385,11 +416,10 @@ This example does not coalesce concurrent misses or guarantee transactional fres
 Use this pattern when the product needs a minimum client version, feature flags, or another published runtime policy. Keep infrastructure env configuration in the normal config loader. Store the published business configuration in Redis and expose only its public fields. The example keeps the real minimum supported build as a single Redis key with no TTL.
 
 ```ts
-// ClientConfigRepository; key() adds the validated namespace.
+// ClientConfigRepository; RedisService.key() adds the validated namespace.
 async findMinimumBuild(): Promise<number | null> {
-  const value = await this.redis.run((redis) =>
-    redis.get(this.key(REDIS_KEYS.publishedClientConfig)),
-  );
+  const key = this.redis.key(REDIS_KEYS.PUBLISHED_CLIENT_CONFIG);
+  const value = await this.redis.run((redis) => redis.get(key));
   if (value === null) return null;
   const minimumBuild = Number(value);
   if (!Number.isSafeInteger(minimumBuild) || minimumBuild < 1) {
@@ -399,9 +429,8 @@ async findMinimumBuild(): Promise<number | null> {
 }
 
 async publishMinimumBuild(minimumBuild: number): Promise<void> {
-  await this.redis.run((redis) =>
-    redis.set(this.key(REDIS_KEYS.publishedClientConfig), String(minimumBuild)),
-  );
+  const key = this.redis.key(REDIS_KEYS.PUBLISHED_CLIENT_CONFIG);
+  await this.redis.run((redis) => redis.set(key, String(minimumBuild)));
 }
 ```
 
@@ -429,6 +458,7 @@ Wire the publisher into the actual authorized write or provisioning path. Publis
 - Reuse existing jobs/events/CDC for prepared data. If reliable propagation is required, add the minimum durable mechanism needed, such as an outbox; do not rely on a crash-lost background promise. Do not introduce outboxes for every cache.
 - Use locks only for a concrete invariant; define owner, expiry, ownership-checked release and recovery. Redis Cluster multi-key operations need co-located keys and compatible scripting. Keep Lua bounded; do not scan unbounded collections atomically.
 - Revisions update all key readers/writers/jobs with any required compatibility transition. Never flush the whole Redis instance or discard active sessions as cleanup.
+- Check static and repeated placeholders, missing and numeric params, namespace isolation, and identical rendered keys across reads, writes and invalidation. For compatible refactors, compare the new output with representative stored key forms.
 - Verify miss/outage/empty values, update/invalidation, rollback, relevant races and query count. Do not claim N+1 removed solely from ORM call count.
 
 Official sources: [Prisma queries](https://www.prisma.io/docs/orm/v6/prisma-client/queries/query-optimization-performance), [transactions](https://www.prisma.io/docs/orm/v6/prisma-client/queries/transactions), [PostgreSQL unique indexes](https://www.postgresql.org/docs/current/indexes-unique.html), [Redis cache-aside](https://redis.io/docs/latest/develop/use-cases/cache-aside/), [prefetch cache](https://redis.io/docs/latest/develop/use-cases/prefetch-cache/), [persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/), [pipelining/transactions](https://redis.io/docs/latest/develop/clients/nodejs/transpipe/).

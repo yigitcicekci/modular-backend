@@ -2,10 +2,31 @@
 
 ## Contents
 
+- Existing backend assessment
 - File organization and composition
 - DTO/controller/service/repository example
 - Typed errors
 - Cross-module use and safe revisions
+
+## Existing backend assessment
+
+Before editing, trace the executable path and a representative request through it. Use the relevant subset for a focused change and the whole application for a backend-wide revision. Provide the assessment in the work conversation. Add or update an architecture document when requested or when the project already keeps one for this purpose.
+
+1. Show current entrypoints and runtime roles, the HTTP adapter and AppBuilder-equivalent, middleware/guards/filters, and a representative `Controller → Service → Repository → SQL/Redis` flow. Identify shared modules and cross-module calls. Include workers and scheduled jobs where present.
+2. Identify data owners, transaction boundaries, Redis key families/TTLs and consumers, session contracts, and the build/start/deploy path. Cite relevant files. Mark what requires runtime verification.
+3. Compare with the skill. State what works, what should change, what is missing, and what is optional for this project. Describe the target flow, how each proposal affects clients or stored data, and the planned checks. State when an adapter, schema, session, Redis key, or deployment change needs a compatibility step.
+4. Ask which proposed changes the user wants. Group related changes into a small number of choices, and recommend the smallest set that achieves the request. Apply the selected changes and plainly report the resulting architecture, tests, and any remaining gaps.
+
+Example assessment for a broad revision:
+
+| Area | Current evidence | Proposal and effect |
+| --- | --- | --- |
+| Feature layers | The controller delegates to the service, which queries the ORM directly. | Move those queries to a feature repository. Preserve filters, response DTOs and transaction behavior. |
+| Redis keys | Reads and invalidation construct the same key separately. | Add the shared key utility and verify both paths produce the stored key byte for byte. |
+| Sessions | SQL owns active sessions and clients expect immediate logout. | Keep SQL ownership in this revision. Moving it to Redis would require a separate ownership and rollout decision. |
+| Jobs | Work fits the request latency budget and has no independent retry requirement. | Keep the current synchronous flow. |
+
+Example decision question: “Should I apply the repository and Redis key changes together, apply only one, or keep both as proposals?” A request that already authorizes an exact change can proceed after the assessment. Approval of an architecture proposal applies to that scope.
 
 ## File organization and composition
 

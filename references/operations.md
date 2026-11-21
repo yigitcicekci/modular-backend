@@ -111,6 +111,7 @@ Run these against the relevant development or test environment before reporting 
 | Localized errors | Through the same builder, compare the exact error envelope and HTTP status in two supported locales and an unsupported locale. Exercise a domain error, validation, a missing route, an unknown 500, and 429 with `Retry-After`. Verify that the release build includes the locale catalogs. |
 | Request boundary | Exercise registered guards, selected header exceptions and their independent auth/rate-limit policies. Where applicable, verify JWT purpose, session/device ownership, and the 401/403 split on real routes. |
 | Validated Redis configuration | Invalid or missing connection config fails clearly. Required Redis is probed with a deadline. After startup, readiness returns 503 on a Redis outage while liveness remains independent. |
+| Shared Redis keys | Generate a real feature's key from the same shared template on read, write and invalidation. Check namespace isolation, missing placeholders and compatibility with stored keys for revisions. |
 | Real Redis data feature | Exercise a write or publication and then the actual API read. Check the Redis key with the shared key builder. Verify a true miss and an outage separately. Prove the read path has no SQL fallback and that data outlives an app restart when its lifecycle requires it. |
 | Shared rate limiting | Hit the running HTTP route from two app instances sharing Redis and verify that they use one counter. Verify the first allowed requests, 429 with `Retry-After`, expiry and renewed access, explicit route exemptions, and typed 503 during a required Redis failure. Check forwarded address behavior with the actual proxy configuration. |
 | Paginated growing lists | Verify default and maximum limits, rejection of malformed parameters, tied timestamps across two pages, a deleted cursor row, tenant or owner scope, and bounded query count. Verify no exact count is run unless requested by the contract. |
@@ -135,8 +136,11 @@ return {count, redis.call('PTTL', KEYS[1])}
 ```
 
 ```ts
-// RateLimitRepository, node-redis. key is built by the shared config.
-async increment(key: string, windowMs: number) {
+// RateLimitRepository, node-redis.
+async increment(policyId: string, actorFingerprint: string, windowMs: number) {
+  const key = this.redis.key(REDIS_KEYS.RATE_LIMIT, {
+    policy_id: policyId, actor_fingerprint: actorFingerprint,
+  });
   const [count, ttlMs] = await this.redis.run((redis) =>
     redis.eval(FIXED_WINDOW_LIMIT, {
       keys: [key], arguments: [String(windowMs)],
