@@ -2,7 +2,8 @@
 
 ## Contents
 
-- Queries, pagination, indexes
+- Queries and indexes
+- Pagination contracts
 - Transaction ownership
 - Redis roles and policies
 - Redis configuration and provider
@@ -10,7 +11,7 @@
 - Redis-owned client configuration
 - Consistency and verification
 
-## Queries, pagination, indexes
+## Queries and indexes
 
 Concrete repositories implement use-case operations, not a generic CRUD superclass. Select needed columns and bound results. Use supported bulk operations, nested reads, joins, or IN queries instead of per-item I/O. Parameterize raw SQL; never interpolate untrusted SQL text.
 
@@ -49,33 +50,91 @@ sumAmounts(userId: string) {
 
 Null totals, currency boundaries and eligible transaction states remain domain decisions; use the actual ledger rules rather than treating this projection as a complete balance implementation.
 
-Use cursor pagination for growing feeds; offset remains valid for bounded/page-number requirements. Use deterministic order and a matching unique cursor. This ID-sorted example is not chronological UUID pagination:
+Tie indexes to actual filters, joins, sorts, or constraints. Inspect primary/unique/composite coverage, selectivity, write cost, and representative plans. A PostgreSQL unique constraint already has an index. Avoid an equivalent ordinary index on the same columns. Use a partial index when a real query consistently reads a small subset, such as outstanding work or unread notifications. Include required database constraints in migrations. Keep one shared DB client/pool per process and budget connections across API replicas, workers, migrations, and rollout overlap. Verify performance changes with representative plans and query counts.
+
+## Pagination contracts
+
+Use keyset pagination on growing API lists. Send `{ items, nextCursor }` for a new list. Validate the limit and cursor in the HTTP DTO/pipe. Use a small default and a hard maximum, such as 25 and 100. Reject malformed inputs with 400. Keep the existing field names and status/validation contract during compatible revisions.
+
+The example sorts newest first by `createdAt, id`. It assumes UUID IDs and a timestamp precision that round-trips through JavaScript `Date`. Match the fields and precision to the schema. If the API accepts multiple sort orders, include the sort in the cursor and reject mismatches. A cursor is a position and grants no access.
 
 ```ts
-// UserRepository; limit validated once at boundary, e.g. 1..100.
-async findPage(limit: number, cursor?: string) {
-  const rows = await this.prisma.user.findMany({
+// List query DTO/pipe helpers. Map INVALID_CURSOR and INVALID_LIMIT to HTTP 400.
+export type ListCursor = { createdAt: Date; id: string };
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+export function parseLimit(value: unknown): number {
+  if (value === undefined) return 25;
+  if (typeof value !== 'string' || !/^[1-9]\d{0,2}$/.test(value) || Number(value) > 100) {
+    throw new AppException('INVALID_LIMIT');
+  }
+  return Number(value);
+}
+
+export function encodeCursor(row: ListCursor): string {
+  return Buffer.from(JSON.stringify({
+    v: 1, at: row.createdAt.toISOString(), id: row.id,
+  })).toString('base64url');
+}
+
+export function decodeCursor(value: unknown): ListCursor | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(value)) {
+    throw new AppException('INVALID_CURSOR');
+  }
+  const bytes = Buffer.from(value, 'base64url');
+  if (bytes.toString('base64url') !== value) throw new AppException('INVALID_CURSOR');
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw new AppException('INVALID_CURSOR');
+  }
+  if (decoded === null || typeof decoded !== 'object') throw new AppException('INVALID_CURSOR');
+  const { v, at, id } = decoded as Record<string, unknown>;
+  if (v !== 1 || typeof at !== 'string' || typeof id !== 'string' || !UUID.test(id)) {
+    throw new AppException('INVALID_CURSOR');
+  }
+  const createdAt = new Date(at);
+  if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== at) {
+    throw new AppException('INVALID_CURSOR');
+  }
+  return { createdAt, id };
+}
+```
+
+```ts
+// NotificationRepository. scope includes the caller's owner/tenant and filters.
+findPage(scope: Prisma.NotificationWhereInput, limit: number, cursor?: ListCursor) {
+  const where = cursor ? {
+    AND: [scope, {
+      OR: [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ],
+    }],
+  } : scope;
+  return this.prisma.notification.findMany({
+    where,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: limit + 1,
-    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    orderBy: { id: 'asc' },
-    select: { id: true, username: true, createdAt: true },
+    select: { id: true, createdAt: true, title: true, readAt: true },
   });
-  return pageFromExtraRow(rows, limit);
 }
 ```
 
 ```ts
-// example: pagination
-export function pageFromExtraRow<T extends { id: string }>(rows: T[], limit: number) {
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  return { items, nextCursor: hasMore ? items[items.length - 1].id : null };
-}
+// NotificationService. Derive scope from the actor and validated filters first.
+const rows = await this.repository.findPage(scope, query.limit, query.cursor);
+const hasMore = rows.length > query.limit;
+const items = hasMore ? rows.slice(0, query.limit) : rows;
+const last = items.at(-1);
+return { items, nextCursor: hasMore && last ? encodeCursor(last) : null };
 ```
 
-Helper preconditions: positive validated limit, at most limit+1 rows. Chronological lists need a stable timestamp/id order and corresponding cursor. Do not add count queries when the response needs no totals. Preserve current filters/cursor behavior on revisions.
+Combine the cursor predicate using `AND` so an existing filter's `OR` stays intact. The cursor carries the sort tuple, so the next page works even if the last row was deleted. For this query, review an index matching the owner or tenant equality scope followed by `createdAt DESC, id DESC`. Apply the same ordering and scoping principle to document stores. Define null handling and ordering stability when cursor fields are nullable or change between pages.
 
-Tie indexes to actual filters, joins, sorts, or constraints. Inspect primary/unique/composite coverage, selectivity, write cost, and representative plans. A PostgreSQL unique constraint already has an index: do not pair `username String @unique` with an equivalent `@@index([username])`. Composite-prefix overlap is a review candidate, not automatic proof an index is useless. For new schemas justify indexes from query shapes and label unmeasured assumptions. Never casually run costly/mutating EXPLAIN ANALYZE against production.
+Use bounded offset for an existing page-number contract or a small bounded list. Run an exact count only when the response needs it. Apply the same filters to rows and count. When the product requires both from the same PostgreSQL snapshot, use a short appropriately isolated read transaction. Live rank ranges may use Redis sorted-set ranges for a requested rank window. Bound page size and batch associated lookups. [Prisma pagination](https://www.prisma.io/docs/orm/prisma-client/queries/pagination)
 
 ## Transaction ownership
 
@@ -106,6 +165,8 @@ const user = await this.prisma.$transaction(async (tx) => {
 ```
 
 Only participating methods need a transaction parameter. Every query in that operation uses the passed client, even through another service. Do not accidentally use a global client or open an independent nested transaction.
+
+Use a conditional update with ownership, expected state and version for competing writes such as status transitions. Domain services decide which transitions are allowed. A zero-row update means the current state no longer matches the requested change and should follow the existing conflict or not-found contract. Commit related audit and notification records in the same transaction when the product requires them to succeed together. Do external delivery after commit.
 
 ```ts
 // UserRepository: self-contained storage operation; service decides eligibility.

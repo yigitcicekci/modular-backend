@@ -107,11 +107,15 @@ Run these against the relevant development or test environment before reporting 
 | Fastify + AppBuilder + Helmet | The production entry point calls `buildApp()`. Tests build through it, call `app.init()`, await Fastify readiness, and use `inject()` on a real API route. Assert a Helmet header such as `x-content-type-options: nosniff` and the expected routing/CORS behavior. Close the app after testing. |
 | Validated Redis configuration | Invalid or missing connection config fails clearly. Required Redis is probed with a deadline. After startup, readiness returns 503 on a Redis outage while liveness remains independent. |
 | Real Redis data feature | Exercise a write or publication and then the actual API read. Check the Redis key with the shared key builder. Verify a true miss and an outage separately. Prove the read path has no SQL fallback and that data outlives an app restart when its lifecycle requires it. |
+| Shared rate limiting | Hit the running HTTP route from two app instances sharing Redis and verify that they use one counter. Verify the first allowed requests, 429 with `Retry-After`, expiry and renewed access, explicit route exemptions, and typed 503 during a required Redis failure. Check forwarded address behavior with the actual proxy configuration. |
+| Paginated growing lists | Verify default and maximum limits, rejection of malformed parameters, tied timestamps across two pages, a deleted cursor row, tenant or owner scope, and bounded query count. Verify no exact count is run unless requested by the contract. |
 | Feature structure and package policy | Check each affected feature for DTO, controller, service, repository, and module. Check provider wiring and the lockfile. Confirm Helmet and the Redis client are used at runtime and avoid adding duplicate clients or optional integrations. |
 
 ## Shared rate limiting
 
-Login, reset/verification requests and sensitive mutations use shared limits where applicable. In a multi-instance backend, process-local Maps do not impose a global limit. Reuse the existing Redis limiter/package; add a short native script only when no suitable implementation exists. Bound key length/cardinality, trust forwarded IP only behind configured proxies, and use validated tenant/user/IP context. Hash sensitive normalized identifiers before using them as key segments; use HMAC with an existing secret when resistance to identifier guessing matters.
+Register active enforcement for external HTTP routes in foundation work. Define a coarse default IP budget and tighter route or action policies in typed shared config. Document exemptions for health or ops routes that run independently of Redis and use separate authentication and provider controls where needed. Nest can use a DI-registered `APP_GUARD` with route metadata or a verified existing throttler with explicit Redis storage. For direct Fastify, wire it in the appropriate request hook. A package declaration, a decorator, and unused Redis helpers do not enforce a limit.
+
+Use a stable policy ID and Redis namespace. Derive client IP from Fastify `request.ip` after configuring trusted proxy addresses, and use an authenticated actor for user or tenant budgets. When authentication runs after a global guard, check actor-specific rules in a guard or service that runs after authentication. Bound key size and cardinality. For passwords, use **independent** counters for client IP and normalized account before password hashing, including unknown accounts. One combined IP-and-account key permits either side to rotate. Keep identifiers out of Redis keys by hashing, preferably with HMAC for guessable account identifiers. Apply separate action budgets after auth for expensive work such as uploads or external API calls.
 
 This fixed-window Lua example atomically initializes count and TTL. Place it in the limiter's repository, not a controller. Policy window/maximum come from shared config; rejected attempts continue to count.
 
@@ -125,17 +129,30 @@ return {count, redis.call('PTTL', KEYS[1])}
 ```
 
 ```ts
-// RateLimitRepository, node-redis; key is built from controlled namespace/context.
-const result = await this.redis.eval(FIXED_WINDOW_LIMIT, {
-  keys: [key], arguments: [String(windowMs)],
-}) as [number, number];
-return { count: result[0], retryAfterMs: Math.max(0, result[1]) };
-
-// RateLimitService/Guard; repository executes commands, guard gates transport.
-// if (result.count > maxAttempts) throw the project's 429 with Retry-After.
+// RateLimitRepository, node-redis. key is built by the shared config.
+async increment(key: string, windowMs: number) {
+  const [count, ttlMs] = await this.redis.run((redis) =>
+    redis.eval(FIXED_WINDOW_LIMIT, {
+      keys: [key], arguments: [String(windowMs)],
+    }),
+  ) as [number, number];
+  if (ttlMs < 0) throw new AppException('RATE_LIMIT_UNAVAILABLE');
+  return { count, ttlMs };
+}
 ```
 
-Counter keys must be created only by this mechanism and not have their TTL removed. A fixed window permits boundary bursts; use the installed sliding/token-bucket limiter when the product requires smoother control, not a new custom algorithm. Redis outage must not be treated as zero attempts; choose explicit unavailable or a documented bounded policy, especially for security-sensitive routes. Test allowed, threshold, expiry and cross-instance/concurrent behavior against Redis when this implementation changes.
+```ts
+// Nest Fastify guard fragment. The limiter resolves policy and trusted actor.
+const reply = context.switchToHttp().getResponse<FastifyReply>();
+const { count, ttlMs } = await this.limiter.consume(policy, identity);
+if (count > policy.limit) {
+  reply.header('Retry-After', String(Math.max(1, Math.ceil(ttlMs / 1000))));
+  throw new AppException('RATE_LIMITED');
+}
+return true;
+```
+
+Map `RATE_LIMITED` to HTTP 429 and preserve the header in the exception filter. Map an unavailable Redis counter to typed HTTP 503. A process-local fallback loses the shared budget when replicas diverge and is unsuitable for required enforcement. Initialize counters only via the atomic operation and do not extend their TTL on subsequent attempts. A fixed window allows bursts around boundaries. When tighter smoothing is required, reuse an existing supported sliding-window or token-bucket implementation. Check policy ordering, Redis sharing, and actual response headers with integration tests. [NestJS rate limiting](https://docs.nestjs.com/security/rate-limiting)
 
 ## Logs and health
 

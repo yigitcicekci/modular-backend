@@ -30,7 +30,7 @@ The agent starts with [SKILL.md](SKILL.md) and opens the references relevant to 
 
 | Starting point | How the agent proceeds |
 | --- | --- |
-| **New backend or foundation overhaul** | Uses Fastify through the shared AppBuilder and applies Helmet to the HTTP application. Wires validated Redis config and delivers a real feature with Redis as its data store, alongside the required domain modules, local setup, and checks. |
+| **New backend or foundation overhaul** | Uses Fastify through AppBuilder with Helmet and active Redis-backed rate limiting. Wires validated Redis config, delivers a Redis-owned feature, and uses bounded keyset pagination for growing lists. |
 | **Existing backend** | Traces callers and dependencies. Applies the conventions to the code involved in the request while preserving API responses, authorization and ownership filters, transaction behavior, and compatibility with existing data. Updates wiring, tests, and consumers as needed. |
 
 The examples use tools such as Prisma, BullMQ, Docker, and GitHub Actions to show the approach in code. The agent adapts them to the installed ORM, queue, Redis client, and delivery platform. It adds optional features such as device registration, push notifications, or workers when the requested workload calls for them.
@@ -79,6 +79,8 @@ Use Node.js built-ins and official Nest modules wherever they meet the need. Fas
 
 The agent looks at queries, round trips, rows, and fields before adding infrastructure. It batches related lookups, selects the fields the response uses, and keeps pagination bounded with stable ordering. Running one query per row in parallel still creates N+1 traffic. New indexes need an access pattern or integrity constraint, and existing primary, unique, and composite indexes count toward that decision.
 
+Growing lists validate the limit and cursor, fetch one extra row, and return `{ items, nextCursor }`. A chronological cursor carries the timestamp and unique row ID. The query keeps the owner or tenant scope and current filters on every page. Page numbers and exact totals are available when the API contract needs them.
+
 The baseline includes `redis.config.ts`, `redis-keys.config.ts`, and `redis-ttl.config.ts`, a shared Redis provider, and readiness checks. At least one real feature reads and writes its data through a Redis repository. For example, an authorized publisher stores the minimum supported client build in Redis and the client-config route reads it from there. The owning feature defines updates, expiry, missing-key behavior, outages, and recovery.
 
 | Redis role | Example | Read policy |
@@ -94,7 +96,7 @@ Redis-owned records and prepared projections are served from Redis. A missing re
 | Area | What the skill guides |
 | --- | --- |
 | **User, auth, and device** | Separate profile updates, credential verification, session management, and device metadata. Apply ownership checks and use response DTOs that expose only allowed fields. When refresh tokens are used, make rotation atomic and define replay and logout behavior. |
-| **Configuration and operations** | Validate environment settings at startup. Use shared rate limits where needed, consistent errors and request IDs, and logs that protect credentials. Check required dependencies in readiness probes. |
+| **Configuration and operations** | Validate environment settings at startup. Register a Redis-backed limiter with a default budget, tighter policies for sensitive routes, and separate counters for login IP and account. Return 429 with `Retry-After` and 503 if required enforcement fails. Use safe logs and probe required dependencies. |
 | **Background work** | Separate API and worker roles when they need to scale independently. Keep batches and retries bounded, treat job delivery as potentially repeated, and make webhook or job side effects safe to retry. |
 | **CI/CD** | Gate releases on checks, promote an immutable artifact, run required migrations once per environment release, and verify readiness and smoke tests. Track the previous artifact and its schema compatibility for rollback. |
 
