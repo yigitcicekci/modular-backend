@@ -24,7 +24,10 @@ import type { HttpConfig } from '../config/app.config';
 export async function buildApp(config: HttpConfig) {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({ trustProxy: config.trustedProxies }),
+    new FastifyAdapter({
+      trustProxy: config.trustedProxies,
+      bodyLimit: config.bodyLimitBytes,
+    }),
     { abortOnError: false },
   );
   try {
@@ -54,7 +57,7 @@ try {
 }
 ```
 
-Here `HttpConfig` includes a validated host, port, prefix, prefix exclusions, explicit CORS origin list, cookie-auth flag, and `false` or a trusted-proxy address list. Keep prefix exclusions in `src/config/route.config.ts` when shared. Enable signal hooks in the executable entry point. Its top-level catch logs safe diagnostics and leaves a nonzero exit status after cleanup. Bind request DTO validation through [feature pipes](architecture.md#dtocontrollerservicerepository-example) or the project's installed global validation. Keep unknown-field rejection for new DTOs and preserve established behavior on revisions.
+Here `HttpConfig` includes a validated host, port, prefix, prefix exclusions, explicit CORS origin list, cookie-auth flag, bounded request body limit in bytes, and `false` or a trusted-proxy address list. Use route-specific limits for justified exceptions, such as streamed uploads. Keep prefix exclusions in `src/config/route.config.ts` when shared. Enable signal hooks in the executable entry point. Its top-level catch logs safe diagnostics and leaves a nonzero exit status after cleanup. Bind request DTO validation through [feature pipes](architecture.md#dtocontrollerservicerepository-example) or the project's installed global validation. Keep unknown-field rejection for new DTOs and preserve established behavior on revisions.
 
 For Node.js HTTP without Nest, use the same builder boundary with `fastify()` and `await app.register(helmet)`. Keep adapter-specific request/reply APIs in transport code. Verify cookies, status codes, multipart routes and raw webhook bodies when migrating adapters. Configure trusted proxies explicitly before using forwarded addresses in guards or rate limits. Keep Helmet defaults for API routes. If Swagger needs a CSP adjustment, scope it to the docs routes and test both the docs and API headers. [Nest Fastify adapter](https://docs.nestjs.com/techniques/performance#fastify-adapter) · [Nest Helmet integration](https://docs.nestjs.com/security/helmet#fastify)
 
@@ -104,7 +107,7 @@ Run these against the relevant development or test environment before reporting 
 
 | Requirement | Evidence |
 | --- | --- |
-| Fastify + AppBuilder + Helmet | The production entry point calls `buildApp()`. Tests build through it, call `app.init()`, await Fastify readiness, and use `inject()` on a real API route. Assert a Helmet header such as `x-content-type-options: nosniff` and the expected routing/CORS behavior. Close the app after testing. |
+| Fastify + AppBuilder + Helmet | The production entry point calls `buildApp()`. Tests build through it, call `app.init()`, await Fastify readiness, and use `inject()` on a real API route. Assert a Helmet header such as `x-content-type-options: nosniff`, expected routing and CORS, and 413 for an oversized body. Close the app after testing. |
 | Validated Redis configuration | Invalid or missing connection config fails clearly. Required Redis is probed with a deadline. After startup, readiness returns 503 on a Redis outage while liveness remains independent. |
 | Real Redis data feature | Exercise a write or publication and then the actual API read. Check the Redis key with the shared key builder. Verify a true miss and an outage separately. Prove the read path has no SQL fallback and that data outlives an app restart when its lifecycle requires it. |
 | Shared rate limiting | Hit the running HTTP route from two app instances sharing Redis and verify that they use one counter. Verify the first allowed requests, 429 with `Retry-After`, expiry and renewed access, explicit route exemptions, and typed 503 during a required Redis failure. Check forwarded address behavior with the actual proxy configuration. |
