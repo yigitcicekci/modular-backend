@@ -30,7 +30,7 @@ The agent starts with [SKILL.md](SKILL.md) and opens the references relevant to 
 
 | Starting point | How the agent proceeds |
 | --- | --- |
-| **New backend** | Uses Fastify for HTTP through Nest's Fastify adapter or directly in a Node.js application without Nest. Builds the required domain modules, wires bootstrap and validated configuration, assigns Redis a useful role, and includes required persistence, migrations, local setup, and checks. |
+| **New backend or foundation overhaul** | Uses Fastify through the shared AppBuilder and applies Helmet to the HTTP application. Wires validated Redis config and delivers a real feature with Redis as its data store, alongside the required domain modules, local setup, and checks. |
 | **Existing backend** | Traces callers and dependencies. Applies the conventions to the code involved in the request while preserving API responses, authorization and ownership filters, transaction behavior, and compatibility with existing data. Updates wiring, tests, and consumers as needed. |
 
 The examples use tools such as Prisma, BullMQ, Docker, and GitHub Actions to show the approach in code. The agent adapts them to the installed ORM, queue, Redis client, and delivery platform. It adds optional features such as device registration, push notifications, or workers when the requested workload calls for them.
@@ -71,23 +71,23 @@ Business actions in another domain go through that domain's service. An exported
 
 ## Bootstrap and packages
 
-Start with one `bootstrap()` in `main.ts` and pass `new FastifyAdapter()` explicitly when creating the Nest application. If tests or another entry point need the same HTTP setup, share it through `configureHttp(app, config)`. Nest providers own external-service initialization and cleanup. For an existing service on another adapter, plan the Fastify migration as part of work on the HTTP stack.
+The HTTP app is created in `src/builder/app.builder.ts` and started by `src/main.ts`. The builder sets up Fastify, registers `@fastify/helmet` before initialization, and applies the validated HTTP configuration. Integration tests use the same builder and verify headers on a live route through Fastify injection. Nest providers own external service initialization and cleanup.
 
-Use Node.js built-ins, required Nest framework packages, and official Nest modules for features that need them. For example, use `fetch` for straightforward HTTP calls, `node:crypto` for UUIDs, and Nest pipes for request validation. Reuse the project's existing database and Redis integrations. If a feature requires a new external client or peer package, the agent explains the requirement and gets approval before adding it.
+Use Node.js built-ins and official Nest modules wherever they meet the need. Fastify, its compatible Helmet plugin, and one Redis client are the baseline package choices. Reuse the project's existing Redis client, or use node-redis for a new project. Additional third-party packages require an explicit decision.
 
 ## Query performance and Redis
 
 The agent looks at queries, round trips, rows, and fields before adding infrastructure. It batches related lookups, selects the fields the response uses, and keeps pagination bounded with stable ordering. Running one query per row in parallel still creates N+1 traffic. New indexes need an access pattern or integrity constraint, and existing primary, unique, and composite indexes count toward that decision.
 
-Redis is part of new backend infrastructure under this skill. Each use gets an explicit role and policy for ownership, updates, expiry, missing keys, outages, and recovery.
+The baseline includes `redis.config.ts`, `redis-keys.config.ts`, and `redis-ttl.config.ts`, a shared Redis provider, and readiness checks. At least one real feature reads and writes its data through a Redis repository. For example, an authorized publisher stores the minimum supported client build in Redis and the client-config route reads it from there. The owning feature defines updates, expiry, missing-key behavior, outages, and recovery.
 
 | Redis role | Example | Read policy |
 | --- | --- | --- |
 | **Primary data** | Active sessions with Redis as the authoritative store | A missing session means it is absent. Redis outages follow the documented failure policy. SQL does not substitute for the session store. |
 | **Prepared read model** | A ranking or catalog projection filled ahead of requests | Reads use the projection. A missing key is handled as absence or a readiness issue, and a refresh or rebuild process restores it. |
-| **Disposable cache** | A cached catalog response owned by SQL | A missing key can load from the owning repository under a cache-aside policy. A Redis failure is handled separately, with any fallback chosen explicitly. |
+| **Disposable cache** | A cached catalog response owned by SQL | Loading from SQL on a miss requires an explicitly agreed cache-aside policy. It does not count as a Redis-owned feature. |
 
-The agent keeps key and TTL definitions together, chooses Redis data structures around actual access patterns, and accounts for persistence or rebuilds when the data matters. An unrelated patch keeps the project's existing storage and fallback behavior.
+Redis-owned records and prepared projections are served from Redis. A missing required configuration and a Redis outage produce distinct failures. Neither triggers a request-time SQL query. Foundation tests cover the real write/read path, missing data and outage behavior.
 
 ## Identity, operations, and delivery
 

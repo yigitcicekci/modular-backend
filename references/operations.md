@@ -4,33 +4,59 @@
 
 - Bootstrap and configuration
 - Package policy
+- Foundation acceptance checks
 - Shared rate limiting
 - Logs and health
 - Integrations, verification, and examples of applying the skill
 
 ## Bootstrap and configuration
 
-Start with one `bootstrap()` in `main.ts`. Use a `configureHttp(app, config)` function when entry points or integration tests share HTTP wiring. Keep a builder class for an existing setup with a real need for composable stages. HTTP setup covers prefix and exclusions, controlled CORS, validation, global errors, and shutdown hooks. Register guards, filters, and interceptors through Nest module providers such as `APP_GUARD`, `APP_FILTER`, and `APP_INTERCEPTOR` when they need dependency injection. The provider that owns an external connection also owns its startup and cleanup.
+For new HTTP backends and foundation work, create `src/builder/app.builder.ts`. Export `buildApp()` or use the project's existing AppBuilder class. The builder creates and configures the Fastify app and returns it without listening. Use the same builder in `src/main.ts` and HTTP integration tests. Wrap the HTTP options in one validated config object. Register global guards, filters, and interceptors through Nest module providers such as `APP_GUARD`, `APP_FILTER`, and `APP_INTERCEPTOR` when they need dependency injection. Register each concern once. External service providers own their startup and cleanup.
 
 ```ts
+// src/builder/app.builder.ts
+import helmet from '@fastify/helmet';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
-import { AppModule } from './app.module';
+import { AppModule } from '../app.module';
+import type { HttpConfig } from '../config/app.config';
 
-// Inside bootstrap(), with validated config.
-const app = await NestFactory.create<NestFastifyApplication>(
-  AppModule,
-  new FastifyAdapter(),
-);
-app.setGlobalPrefix(config.apiPrefix, { exclude: config.prefixExclusions });
-app.enableCors({ origin: config.corsOrigins });
-app.enableShutdownHooks();
-await app.listen(config.port, config.host);
+export async function buildApp(config: HttpConfig) {
+  const app = await NestFactory.create<NestFastifyApplication>(
+    AppModule,
+    new FastifyAdapter({ trustProxy: config.trustedProxies }),
+    { abortOnError: false },
+  );
+  try {
+    await app.register(helmet);
+    app.setGlobalPrefix(config.apiPrefix, { exclude: config.prefixExclusions });
+    app.enableCors({
+      origin: config.corsOrigins.length ? config.corsOrigins : false,
+      credentials: config.cookieAuth,
+    });
+    return app;
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
+}
 ```
 
-Bind request DTO validation through [feature pipes](architecture.md#dtocontrollerservicerepository-example) or the project's existing global validation. Match the existing rules on transformations and unknown fields during revisions. Use one startup error owner that reports safe diagnostics and terminates with a nonzero status. Exercise the real HTTP configuration in integration tests, including global providers, health route exclusions, and the selected adapter.
+```ts
+// src/main.ts, inside bootstrap() after loading validated config.
+const app = await buildApp(config);
+try {
+  app.enableShutdownHooks();
+  await app.listen(config.port, config.host);
+} catch (error) {
+  await app.close();
+  throw error;
+}
+```
 
-For Node.js HTTP without Nest, initialize `fastify()` directly. Keep adapter-specific request/reply APIs at the transport boundary. When migrating an existing HTTP stack to Fastify, check middleware, response serialization and status, CORS, cookies, multipart routes, and webhook body handling as applicable. Use the same adapter in production and HTTP integration tests. Fastify's `inject()` can exercise routes without opening a listening socket. [Nest Fastify adapter](https://docs.nestjs.com/techniques/performance#fastify-adapter) · [Fastify testing](https://fastify.dev/docs/latest/Guides/Testing/)
+Here `HttpConfig` includes a validated host, port, prefix, prefix exclusions, explicit CORS origin list, cookie-auth flag, and `false` or a trusted-proxy address list. Keep prefix exclusions in `src/config/route.config.ts` when shared. Enable signal hooks in the executable entry point. Its top-level catch logs safe diagnostics and leaves a nonzero exit status after cleanup. Bind request DTO validation through [feature pipes](architecture.md#dtocontrollerservicerepository-example) or the project's installed global validation. Keep unknown-field rejection for new DTOs and preserve established behavior on revisions.
+
+For Node.js HTTP without Nest, use the same builder boundary with `fastify()` and `await app.register(helmet)`. Keep adapter-specific request/reply APIs in transport code. Verify cookies, status codes, multipart routes and raw webhook bodies when migrating adapters. Configure trusted proxies explicitly before using forwarded addresses in guards or rate limits. Keep Helmet defaults for API routes. If Swagger needs a CSP adjustment, scope it to the docs routes and test both the docs and API headers. [Nest Fastify adapter](https://docs.nestjs.com/techniques/performance#fastify-adapter) · [Nest Helmet integration](https://docs.nestjs.com/security/helmet#fastify)
 
 Config values are parsed/validated at startup, then injected. Never silently accept malformed ports, TTLs, empty secrets, or default production credentials. Do not scatter process.env reads through services. Keep actual secrets outside source and logs; document needed variable names in the project's example environment file.
 
@@ -60,15 +86,28 @@ SwaggerModule.setup('docs', app, document);
 
 Gate or protect docs according to the product's deployment policy; do not expose debug/test controllers in production by default.
 
+When mobile clients send app version, platform, or device headers, validate and normalize them once in a shared client-context guard or decorator. Pass the resulting typed context to the owning service. The device header describes a client installation. Authorization still comes from the verified user and session. Keep explicit exceptions for liveness, provider webhooks, or public configuration routes that predate client bootstrap. Test those exceptions alongside protected routes and keep error codes stable when messages are localized.
+
 ## Package policy
 
-For Nest HTTP, use `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-fastify`, and required framework peers such as `reflect-metadata` and `rxjs` for Nest 11. For Node.js HTTP without Nest, install `fastify` directly. Declare a direct `fastify` dependency in Nest only if the application imports it directly, and match the adapter-compatible version. Non-HTTP Node.js processes can use built-ins for their runtime work. For TypeScript, use `typescript` and `@types/node` as dev tooling, plus `@nestjs/cli` if the project builds through `nest build`. Check the installed or selected major's manifests. Fastify plugins are feature dependencies and follow the same approval rule.
+For Nest HTTP, use `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-fastify`, required framework peers, and compatible `@fastify/helmet`. For Node.js HTTP without Nest, install `fastify` and its compatible Helmet plugin. In Nest, declare `fastify` directly if application code imports it. Use `typescript` and `@types/node` as dev tooling when applicable, plus `@nestjs/cli` for `nest build`. Match installed majors and the lockfile. Helmet and one Redis client are baseline dependencies. Other Fastify plugins need a required feature and user approval.
 
 Prefer built-in `fetch`, `AbortSignal.timeout()`, `node:crypto`, `Intl`, `node:test`, `node:assert/strict`, and `--env-file` on supported Node versions. Nest built-in `Parse*` pipes cover individual values. A small feature pipe can validate a DTO body. Use `ValidationPipe` from an existing project when its `class-validator` and `class-transformer` dependencies are already installed. Adding these packages requires explicit approval.
 
-Official Nest packages such as `@nestjs/config`, `@nestjs/jwt`, `@nestjs/swagger`, `@nestjs/terminus`, `@nestjs/schedule`, and `@nestjs/testing` are feature choices. Verify their dependency requirements before choosing them. Database drivers, Redis clients, durable queue implementations, and provider SDKs require a supported existing integration or explicit approval for the required package. A compatible existing HTTP service can be called through `fetch` when its API meets the feature needs. Never hand-roll a Redis or database protocol, cryptographic token signing, or delivery guarantees to avoid a dependency.
+Official Nest packages such as `@nestjs/config`, `@nestjs/jwt`, `@nestjs/swagger`, `@nestjs/terminus`, `@nestjs/schedule`, and `@nestjs/testing` are feature choices. Verify their dependency requirements. Reuse the installed Redis client or select `redis` for a new project. Other database drivers, durable queue implementations, and provider SDKs require an existing integration or explicit approval. A compatible existing HTTP service can be called through `fetch` when its API meets the feature needs. Never hand-roll a Redis or database protocol, cryptographic token signing, or delivery guarantees to avoid a dependency.
 
 See [Nest validation](https://docs.nestjs.com/techniques/validation), [Nest lifecycle](https://docs.nestjs.com/fundamentals/lifecycle-events), and [Node globals](https://nodejs.org/api/globals.html).
+
+## Foundation acceptance checks
+
+Run these against the relevant development or test environment before reporting a foundation complete. If infrastructure cannot run there, identify the specific check that remains.
+
+| Requirement | Evidence |
+| --- | --- |
+| Fastify + AppBuilder + Helmet | The production entry point calls `buildApp()`. Tests build through it, call `app.init()`, await Fastify readiness, and use `inject()` on a real API route. Assert a Helmet header such as `x-content-type-options: nosniff` and the expected routing/CORS behavior. Close the app after testing. |
+| Validated Redis configuration | Invalid or missing connection config fails clearly. Required Redis is probed with a deadline. After startup, readiness returns 503 on a Redis outage while liveness remains independent. |
+| Real Redis data feature | Exercise a write or publication and then the actual API read. Check the Redis key with the shared key builder. Verify a true miss and an outage separately. Prove the read path has no SQL fallback and that data outlives an app restart when its lifecycle requires it. |
+| Feature structure and package policy | Check each affected feature for DTO, controller, service, repository, and module. Check provider wiring and the lockfile. Confirm Helmet and the Redis client are used at runtime and avoid adding duplicate clients or optional integrations. |
 
 ## Shared rate limiting
 

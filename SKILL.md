@@ -1,6 +1,6 @@
 ---
 name: modular-backend
-description: Build, extend, refactor, or fix NestJS and Node.js backends using Fastify for HTTP, modular controller/service/repository boundaries, efficient queries, explicit Redis roles, auth/user/device workflows, reliable jobs, and CI/CD. Use for new backend infrastructure, backend features, and existing backend revisions; not frontend-only tasks or permission to rewrite unrelated code.
+description: Build, extend, refactor, or fix NestJS and Node.js backends using Fastify, AppBuilder, Helmet, modular controller/service/repository boundaries, and Redis as a data store. Apply efficient queries, identity workflows, reliable jobs, and CI/CD to new backend infrastructure and existing backend revisions.
 license: MIT
 ---
 
@@ -19,26 +19,26 @@ Complete the requested behavior with the smallest readable change. Apply these c
 | Queues, workers, schedules, webhook idempotency, resource limits | [Background work](references/background-work.md) |
 | CI checks, containers, migrations, releases, rollback | [CI/CD](references/ci-cd.md) |
 
-Read only what the task needs. Examples express responsibilities and invariants; adapt imports, names, schemas, framework versions, ORM, and Redis client to the repository. They are not a standalone application to paste wholesale. These instructions use portable Markdown and standard project tools; no provider-specific agent APIs, MCP services, paid integrations, shell aliases, or personal repositories are required. Follow the host agent's permission model and the user's requested scope.
+For a new backend, foundation overhaul, or request to fix missing baseline components, read Architecture, Operations, and Data and Redis before editing. Read other references as the task needs them. Adapt examples to the installed versions and actual domain. Use portable Markdown and standard project tools. Follow the host agent's permission model.
 
 ## Establish scope before editing
 
 Read repository instructions, package manifest, bootstrap, affected modules and callers, relevant schemas, Redis usage, and tests. Use config definitions and example variable names rather than reading secrets. Briefly identify affected layers/files, observable behavior, and necessary checks. Resolve routine choices from existing code; ask only when a missing product decision changes behavior or data ownership.
 
-### New backend
+### New backend, foundation overhaul, or baseline remediation
 
-- Use Fastify for all new HTTP backends. Default to NestJS and TypeScript with an explicit `FastifyAdapter` from `@nestjs/platform-fastify`. For Node.js HTTP without Nest, use `fastify` directly with the same module boundaries. Workers without HTTP use their existing worker entry point.
+- **AppBuilder and Helmet are required for HTTP.** Keep `src/main.ts` thin and put HTTP construction in `src/builder/app.builder.ts`. Use an explicit Nest `FastifyAdapter` or direct `fastify` for Node.js HTTP without Nest. Register compatible `@fastify/helmet` before initialization or listening. Bind the real builder in HTTP integration tests. Workers without HTTP use their own entry point.
+- **Redis infrastructure and a real Redis data path are required.** Add validated connection config, centralized Redis key and TTL files, one shared Redis provider, and a readiness probe. Assign Redis at least one useful data family for which it is the source of truth. Implement its real reads and writes through a domain repository. A connection, health probe, or SQL response cache alone does not satisfy this rule. Use a suitable existing product flow such as published client configuration, live ranking/state, or shared throttling. Where the product has client-config or version policy, store and serve its published document from Redis. Identify a missing product decision if no legitimate data family can be chosen from scope.
+- **Redis-owned and prepared reads stay on Redis.** Set the population, update, missing-key, expiry, outage, and recovery behavior per key family. Use typed absence for a genuine missing entity and typed unavailable for an outage or a required projection that is not ready. A request never queries SQL as a fallback for these roles. Use an explicit cache-aside exception only for an agreed disposable cache. Preserve an existing read contract on unrelated revisions.
 - Implement only required modules/features. Auth/user/device workflows are reusable guidance, not permission to add account features to a service that does not need them.
-- Plan Redis as baseline infrastructure with a useful workload role. Use the project's existing connection or an approved service interface. If an external client is required under the package policy, surface that requirement before selecting or adding it.
-- Use Node.js built-ins and official NestJS modules first. Install the Nest core, `@nestjs/platform-fastify`, required peers, and necessary build tooling. Direct `fastify` is part of the approved HTTP stack when the application imports it. Add official optional Nest modules only for required features. Other new third-party dependencies, including optional peers and Fastify plugins, require explicit user approval. Reuse existing integrations in revisions. See [Operations](references/operations.md#package-policy).
-- Start HTTP setup in `main.ts` with a `bootstrap()` function. Extract shared setup into `configureHttp(app, config)` when another entry point or integration test needs it. Keep external service startup and shutdown in the owning providers.
+- Use Node.js built-ins and official NestJS modules first. The approved baseline includes compatible `@fastify/helmet` and a single Redis client. Keep the existing working client, including ioredis if used. Default to `redis` (node-redis) for a new project without one. Use `fastify` directly where imported. Other new third-party packages, optional peers and Fastify plugins require explicit approval. See [Operations](references/operations.md#package-policy).
 - Deliver connected bootstrap, validated config, providers, required migrations, local setup, and the requested APIs. Do not stop at disconnected scaffold files.
 
 ### Existing backend / revision
 
 - Find all callers before changing a shared function or moving files: services, controllers, jobs, guards, exports, mocks, fixtures, and response consumers.
 - Preserve unrelated changes, public contracts, token/storage behavior, validation, ownership filters, and established naming. Restrict cleanup to the task's path.
-- Use Fastify when the task sets up or replaces the HTTP stack. An existing service on a different adapter needs a scoped migration to Fastify. Preserve its adapter during unrelated changes and surface the migration requirement when relevant. Verify status codes, middleware, cookies, uploads, and signed webhook bodies where the migration touches them.
+- When the task sets up, replaces, or repairs the HTTP foundation, bring Fastify, AppBuilder and Helmet into scope together. Preserve the adapter and bootstrap during unrelated feature changes. When migrating to Fastify, verify status codes, middleware, cookies, uploads, and signed webhook bodies where relevant.
 - Extract queries to concrete repositories when changing the relevant service. Preserve transaction context, locks, error handling, return shape, soft-delete and tenant scopes.
 - For an infrastructure setup or refactor, apply the same package policy. Preserve existing integrations unless the task changes them. Resolve dependencies required for the requested infrastructure before adding packages.
 - Do not silently remove fallback, switch session storage, change token lifetimes, or invalidate all sessions as cleanup. Plan compatibility and data/key migrations for requested transitions.
@@ -60,6 +60,8 @@ Read repository instructions, package manifest, bootstrap, affected modules and 
 ## Complete and verify
 
 Update necessary callers, DTOs, error definitions, providers/exports, config, schemas/migrations, and tests. Implement important failures as well as success.
+
+For foundation work, follow the [acceptance checks](references/operations.md#foundation-acceptance-checks). Trace the production entry point through the builder and one real feature through its Redis repository. Verify Helmet on a real route, Redis initialization and shutdown, and the difference between a missing Redis key and an outage. Report any baseline item that is missing or unverified.
 
 New non-trivial logic needs a small behavior test or assert-based check. Verify affected invariants: ownership, query count, rollback, token expiry/reuse/concurrency, Redis miss versus outage, or atomic updates. Trivial moves do not need implementation-mirroring tests. Run the relevant build/typecheck and required project checks without unrelated autofixes. Do not claim performance, integration coverage, or production/security verification you did not perform.
 
